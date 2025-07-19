@@ -1,33 +1,30 @@
 use alloy::primitives::{Address, ChainId};
 use alloy::rpc::types::Filter;
+use thiserror::Error;
 
-struct Subscription {
-    chainID: usize,
-    address: Address,
-    event_signature: String,
-    topics: Option<Vec<String>>,
+pub struct IncomingSubscription {
+    sub: Subscription,
+    signature: String,
 }
 
-impl Subscription {
-    fn new(
-        chainID: String,
-        address: String,
+pub enum SubscriptionType {
+    Subscription {
+        user: Address,
+        chainid: usize,
+        address: Vec<Address>,
         event_signature: String,
         topics: Option<Vec<String>>,
-    ) -> Self {
-        return Subscription {
-            chainID,
-            address: Address::from_str(addres.as_str()),
-            event_signature,
-            topics,
-        };
-    }
+    },
+}
 
-    fn filter(self) -> Filter {
-        let filter = Filter::new();
-        filter
-            .address(self.address)
-            .event(&self.event_signature.as_str())
-            .topics
-    }
+pub enum RpcTypes {}
+
+/// Errors for RPC operations           
+
+#[derive(Error, Debug)]
+enum RpcError {
+    #[error("Chain is Not Supported")]
+    ChainNotSupported,
+    #[error("Chain has no URL")]
+    ChainHasNoRpcURL,
 }
