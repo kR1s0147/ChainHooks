@@ -1,3 +1,7 @@
+#[allow(warnings)]
+use crate::rpchandler::rpc_types::SubscriptionType;
+mod relayer;
 mod rpchandler;
 
-fn main() {}
+#[tokio::main]
+async fn main() {}

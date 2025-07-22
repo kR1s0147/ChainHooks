@@ -7,11 +7,14 @@ name = "ChainHooks"
 version = "0.1.0"
 dependencies = [
  "alloy",
+ "futures",
+ "futures-util",
  "rocksdb",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tonic",
  "tracing",
  "tracing-subscriber",
