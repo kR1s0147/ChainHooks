@@ -92,6 +92,7 @@ impl chainRpc {
 
         Ok((command_sender, rpcevent_receiver))
     }
+
     fn getFilter(subscription: &SubscriptionType) -> (Address, Filter) {
         match subscription {
             SubscriptionType::Subscription {

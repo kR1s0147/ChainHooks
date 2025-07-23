@@ -28,7 +28,13 @@ pub enum RelayerError {
     InvalidArgsCount,
     #[error("Topic Range Out of Index")]
     TopicOutOfIndex,
+    #[error("Invalid address")]
+    InvalidAddress,
+    #[error("Already Registered")]
+    AlreadyRegistered,
 }
+
+pub enum UserUpdates {}
 
 pub struct RawTransaction {
     contract_address: String,
