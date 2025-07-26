@@ -8,6 +8,8 @@ alloy = { version = "1.0.20" , features = ["full"]}
 eyre = "0.6.12"
 futures = "0.3.31"
 futures-util = "0.3.31"
+prost = "0.13.5" # <--- Change this to match tonic's dependency
+prost-types = "0.13.5"
 rocksdb = "0.23.0"
 serde = "1.0.219"
 serde_json = "1.0.140"
@@ -17,3 +19,8 @@ tokio-stream = "0.1.17"
 tonic = "0.13.1"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+
+[build-dependencies]
+prost-build = "0.13.5"
+tonic-build = "0.13.1"
+

@@ -1,0 +1,114 @@
+syntax = "proto3";
+
+package chainhooks;
+
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto"; 
+service ChainHooks {
+
+    
+    rpc GetNonce(GetNonceRequest) returns (GetNonceResponse);
+
+    
+    rpc Register(UserAuthRequest) returns (UserRegistrationResponse);
+
+    
+    rpc GetRelayer(UserAuthRequest) returns (RelayerInfo);
+
+    
+    rpc UnRegister(UserAuthRequest) returns (UserRegistrationResponse); 
+
+   
+    rpc GetLogs(GetUserLogsRequest) returns (UserLogs); 
+
+    
+    rpc Subscribe(SubscriptionRequest) returns (SubscriptionResponse);
+
+    
+    rpc UnSubscribe(UnsubscribeRequest) returns (google.protobuf.Empty); 
+
+
+}
+
+message GetNonceRequest {
+    string address = 1; 
+}
+
+
+message GetNonceResponse {
+    string nonce = 1; 
+}
+
+message UserAuthRequest {
+    string address = 1;   
+    string signature = 2; 
+}
+
+
+message UserRegistrationResponse {
+    bool success = 1;  
+    string message = 2; 
+    string user_id = 3; 
+}
+
+
+message RelayerInfo {
+
+    string owner_address = 1;
+    string private_key_masked = 2; 
+    string relayer_public_key = 3; 
+}
+
+
+message GetUserLogsRequest {
+    string address = 1;
+    string signature = 2;
+    google.protobuf.Timestamp start_time = 3;
+}
+
+
+message LogEntry {
+    google.protobuf.Timestamp timestamp = 1;                  
+    string message = 3;                     
+    string subscription_id = 4;                    
+}
+
+
+message UserLogs {
+    string address = 1; 
+    repeated LogEntry logs = 2; 
+}
+
+
+message SubscriptionRequest {
+    string address = 1;
+    string signature = 2;
+    SubscriptionDetails details = 3;
+}
+
+
+message SubscriptionResponse {
+    string subscription_id = 1; 
+    bool success = 2;
+    string message = 3; 
+    google.protobuf.Timestamp created_at = 4;
+}
+
+
+
+message SubscriptionDetails {
+    int32 chain_id = 1; 
+    string target_address = 2; 
+    string abi_json = 3; 
+    string function_name = 4;
+    string event_signature = 5; 
+    repeated string indexed_params_filter = 6;     
+}
+
+
+message UnsubscribeRequest {
+    string address = 1;
+    string signature = 2;
+    string subscription_id = 3; 
+}

@@ -17,7 +17,6 @@ impl Relayers {
             Ok(add) => add,
             Err(e) => return Err(Box::new(RelayerError::InvalidAddress)),
         };
-
         match self.relayers.get(&addr) {
             Some(_) => return Err(Box::new(RelayerError::AlreadyRegistered)),
             None => {}

@@ -12,24 +12,34 @@ use thiserror::Error;
 pub enum RelayerError {
     #[error("Chain is Not Supported")]
     InvalidABI,
+
     #[error("Chain has no URL")]
     ChainHasNoRpcURL,
+
     #[error("User subscription is not found")]
     NoSubscriptionFound,
+
     #[error("invalid transaction")]
     InvalidTransactionRequest,
+
     #[error("Function not found")]
     FunctionNotFound,
+
     #[error("Invalid Data Type")]
     InvalidDataType,
+
     #[error("Invalid topic mapping")]
     InvalidTopicMapping,
+
     #[error("Invalid args count")]
     InvalidArgsCount,
+
     #[error("Topic Range Out of Index")]
     TopicOutOfIndex,
+
     #[error("Invalid address")]
     InvalidAddress,
+
     #[error("Already Registered")]
     AlreadyRegistered,
 }
