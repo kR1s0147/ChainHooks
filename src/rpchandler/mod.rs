@@ -14,19 +14,18 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_stream::StreamMap;
 use tracing::subscriber;
-pub mod relayers;
 pub mod rpc_types;
 use dashmap::DashMap;
-use relayers::*;
 use rpc_types::*;
+mod relayer;
 
 use crate::rpchandler::transactionTypes::RawTransaction;
 
 pub mod transactionTypes;
 pub struct chainRpc {
     chainid: usize,
-    subscriptions: HashMap<Address, Vec<(String, SubscriptionType)>>,
-    active_subscriptions: HashMap<String, SubscriptionType>,
+    subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
+    active_subscriptions: DashMap<String, SubscriptionType>,
     event_sender: mpsc::Sender<RpcTypes>,
     provider: Box<dyn Provider<Ethereum>>,
     number_of_subsciptions: usize,
@@ -177,8 +176,6 @@ impl chainRpc {
 struct RPChandler {
     available_chains: Vec<usize>,
     chain_state: DashMap<usize, ChainState>,
-    relayers: DashMap<Address, EthereumWallet>,
-    actions: DashMap<String, RawTransaction>,
 }
 
 impl RPChandler {
@@ -186,8 +183,6 @@ impl RPChandler {
         RPChandler {
             available_chains: Vec::new(),
             chain_state: Default::default(),
-            relayers: Default::default(),
-            actions: Default::default(),
         }
     }
 
