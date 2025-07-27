@@ -8,19 +8,21 @@ use alloy::rpc;
 use alloy::rpc::types::Filter;
 use alloy::rpc::types::Log;
 use futures::StreamExt;
-use futures::future::ok;
-
-use std::collections::HashMap;
 use std::error::Error;
-use std::hash;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, Receiver};
 use tokio_stream::StreamMap;
 use tracing::subscriber;
+pub mod relayers;
 pub mod rpc_types;
+use dashmap::DashMap;
+use relayers::*;
 use rpc_types::*;
 
+use crate::rpchandler::transactionTypes::RawTransaction;
+
+pub mod transactionTypes;
 pub struct chainRpc {
     chainid: usize,
     subscriptions: HashMap<Address, Vec<(String, SubscriptionType)>>,
@@ -174,7 +176,9 @@ impl chainRpc {
 
 struct RPChandler {
     available_chains: Vec<usize>,
-    chain_state: HashMap<usize, ChainState>,
+    chain_state: DashMap<usize, ChainState>,
+    relayers: DashMap<Address, EthereumWallet>,
+    actions: DashMap<String, RawTransaction>,
 }
 
 impl RPChandler {
@@ -182,6 +186,8 @@ impl RPChandler {
         RPChandler {
             available_chains: Vec::new(),
             chain_state: Default::default(),
+            relayers: Default::default(),
+            actions: Default::default(),
         }
     }
 

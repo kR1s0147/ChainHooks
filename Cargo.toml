@@ -5,11 +5,14 @@ edition = "2024"
 
 [dependencies]
 alloy = { version = "1.0.20" , features = ["full"]}
+dashmap = "6.1.0"
 eyre = "0.6.12"
 futures = "0.3.31"
 futures-util = "0.3.31"
+hex = "0.4.3"
 prost = "0.13.5" # <--- Change this to match tonic's dependency
 prost-types = "0.13.5"
+rand = "0.9.2"
 rocksdb = "0.23.0"
 serde = "1.0.219"
 serde_json = "1.0.140"

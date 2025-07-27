@@ -85,6 +85,15 @@ message SubscriptionRequest {
     string address = 1;
     string signature = 2;
     SubscriptionDetails details = 3;
+    RelayerAction action = 4;
+}
+
+message RelayerAction{
+    int32 chain_id = 1;
+    string target_address = 2;
+    string ABI = 3;
+    string function_name = 4;
+    repeated string params = 5;
 }
 
 
@@ -100,10 +109,7 @@ message SubscriptionResponse {
 message SubscriptionDetails {
     int32 chain_id = 1; 
     string target_address = 2; 
-    string abi_json = 3; 
-    string function_name = 4;
-    string event_signature = 5; 
-    repeated string indexed_params_filter = 6;     
+    string event_signature = 5;    
 }
 
 
