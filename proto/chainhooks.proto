@@ -56,8 +56,7 @@ message UserRegistrationResponse {
 message RelayerInfo {
 
     string owner_address = 1;
-    string private_key_masked = 2; 
-    string relayer_public_key = 3; 
+    string relayer_public_key = 2; 
 }
 
 

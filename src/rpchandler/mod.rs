@@ -17,7 +17,7 @@ use tracing::subscriber;
 pub mod rpc_types;
 use dashmap::DashMap;
 use rpc_types::*;
-mod relayer;
+pub mod relayer;
 
 use crate::rpchandler::transactionTypes::RawTransaction;
 
@@ -36,7 +36,8 @@ impl chainRpc {
         chainid: usize,
         URL: String,
         subscription: SubscriptionType,
-    ) -> Result<(mpsc::Sender<SubscriptionType>, mpsc::Receiver<RpcTypes>), Box<dyn Error>> {
+        command_receiver: mpsc::Receiver<RpcTypes>,
+    ) -> Result<mpsc::Receiver<RpcTypes>, Box<dyn Error>> {
         // Connecting the RPC node with web sockets
 
         let ws = WsConnect::new(URL);
@@ -46,7 +47,6 @@ impl chainRpc {
             .connect_ws(ws)
             .await?;
 
-        let (command_sender, mut command_receiver) = mpsc::channel::<SubscriptionType>(100);
         let (rpcevent_sender, rpcevent_receiver) = mpsc::channel::<RpcTypes>(100);
 
         let (user, filter) = Self::getFilter(&subscription);
@@ -91,7 +91,7 @@ impl chainRpc {
             }
         });
 
-        Ok((command_sender, rpcevent_receiver))
+        Ok(rpcevent_receiver)
     }
 
     fn getFilter(subscription: &SubscriptionType) -> (Address, Filter) {
@@ -176,6 +176,7 @@ impl chainRpc {
 struct RPChandler {
     available_chains: Vec<usize>,
     chain_state: DashMap<usize, ChainState>,
+    user_logs: DashMap<Address, Vec<UserLogs>>,
 }
 
 impl RPChandler {
@@ -183,6 +184,7 @@ impl RPChandler {
         RPChandler {
             available_chains: Vec::new(),
             chain_state: Default::default(),
+            user_logs: Default::default(),
         }
     }
 

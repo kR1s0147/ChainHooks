@@ -1,5 +1,5 @@
 use alloy::primitives::{Address, ChainId};
-use alloy::rpc::types::Filter;
+use alloy::rpc::types::{Filter, Log};
 use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -20,7 +20,11 @@ pub enum SubscriptionType {
 }
 
 pub enum RpcTypes {
-    UserLog { user: Address, log: String },
+    UserLog {
+        user: Address,
+        sub_id: String,
+        log: Log,
+    },
 }
 
 /// Errors for RPC operations           

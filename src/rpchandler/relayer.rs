@@ -1,13 +1,17 @@
 use alloy::{primitives::Address, rpc::types::Log};
 use dashmap::DashMap;
+use std::error::Error;
 use tokio::{sync::mpsc, time};
 
 pub struct RelayerHandler {
     log_receiver: mpsc::Receiver<Log>,
     command_reciever: mpsc::Receiver<RelayerCommand>,
     relayers: DashMap<Address, EthereumWallet>,
-    user_logs: DashMap<Address, Vec<UserLogs>>,
     actions: DashMap<String, RawTransaction>,
+}
+pub struct UserLogs {
+    Message: String,
+    time: time::Instant,
 }
 
 impl RelayerHandler {
@@ -37,17 +41,50 @@ impl RelayerHandler {
             loop {
                 tokio::select! {
                     command = command_receiver.recv() => {
-                        self.handle_command()?
+                        self.handle_command(command)?
                     }
-                    log = log_receiver.recv() => {
-                        self.handle_log()?
+                    (log, response_receiver) = log_receiver.recv() => {
+                        
+                        self.handle_log(log,response_receiver).await
+                        
                     }
                 }
             }
         })
     }
 
-    async fn handle_command(&mut self) -> Result<(), Box<dyn Error + Send + Sync>> {}
+    async fn handle_command(
+        &mut self,
+        command: RelayerCommand,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        match command {
+            RelayerCommand::Register { user } => {}
+            RelayerCommand::GetLogs { user } => {}
+            RelayerCommand::UnRegister { user } => {}
+            RelayerCommand::DefineRelayerAction {
+                sub_id,
+                chainid,
+                target_address,
+                ABI,
+                function_name,
+                Params,
+            } => {}
+            RelayerCommand::Revoke_Relayer_Action { user, sub_id } => {}
+        }
+    }
+
+    async fn handle_log(
+        &mut self,
+        log: Log,
+        response_receiver: Receiver<RelayerCommand>,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+
+        let raw_tran = self.actions.get()
+    }
+}
+pub struct UserLogs {
+    Message: String,
+    time: time::Instant,
 }
 
 pub enum RelayerCommand {
@@ -73,9 +110,4 @@ pub enum RelayerCommand {
         user: String,
         sub_id: String,
     },
-}
-
-pub struct UserLogs {
-    Message: String,
-    time: time::Instant,
 }
