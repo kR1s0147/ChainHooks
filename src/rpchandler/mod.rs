@@ -1,17 +1,15 @@
 use alloy::network::Ethereum;
-use alloy::primitives::{Address, keccak256};
-use alloy::providers::RootProvider;
+use alloy::primitives::Address;
 
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::pubsub::{Subscription, SubscriptionStream};
-use alloy::rpc;
 use alloy::rpc::types::Filter;
 use alloy::rpc::types::Log;
 use futures::StreamExt;
 use std::error::Error;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::{Mutex, oneshot};
 use tokio_stream::StreamMap;
 use tracing::subscriber;
 pub mod rpc_types;
@@ -50,7 +48,11 @@ impl chainRpc {
             .await?;
 
         let (user, filter) = Self::getFilter(&subscription);
-        let sub = provider.subscribe_logs(&filter).await?;
+        let sub = match provider.subscribe_logs(&filter).await {
+            Ok(sub) => sub,
+            Err(e) => return Err(Box::new(RpcTypeError::SubscriptionError)),
+        };
+
         let key = sub.local_id().clone().to_string();
 
         let mut chainrpc = chainRpc {
@@ -79,9 +81,9 @@ impl chainRpc {
         tokio::task::spawn(async move {
             loop {
                 tokio::select! {
-                    Some(cmd) =  command_receiver.recv() => {
+                    Some((cmd , res_receiver)) =  command_receiver.recv() => {
                         let mut rpc_locked = rpc_clone.lock().await;
-                        if let Err(e) = (&mut *rpc_locked).handlecmd(cmd , &mut stream_map).await{
+                        if let Err(e) = (&mut *rpc_locked).handlecmd(cmd ,res_receiver, &mut stream_map).await{
                             eprint!("cmd error :{e}");
                         }
                     }
@@ -116,6 +118,7 @@ impl chainRpc {
     async fn handlecmd(
         &mut self,
         cmd: SubscriptionType,
+        res_receiver: oneshot::Sender<RpcTypes>,
         stream_map: &mut StreamMap<String, SubscriptionStream<Log>>,
     ) -> Result<(), Box<dyn Error>> {
         match cmd.clone() {
@@ -126,7 +129,17 @@ impl chainRpc {
                 event_signature,
             } => {
                 let (user, filter) = Self::getFilter(&cmd);
-                let sub = self.provider.subscribe_logs(&filter).await?;
+                let sub = match provider.subscribe_logs(&filter).await {
+                    Ok(sub) => sub,
+                    Err(e) => {
+                        let res = RpcTypes::Response {
+                            success: False,
+                            message: "error while subscription",
+                        };
+                        res_receiver.send(res).await;
+                        return Err(Box::new(RpcTypeError::SubscriptionError));
+                    }
+                };
                 self.number_of_subsciptions += 1;
 
                 let subid = sub.local_id().to_string();
@@ -153,6 +166,13 @@ impl chainRpc {
                 }
             }
         }
+
+        let res = RpcTypes::Response {
+            success: bool,
+            message: "Command success",
+        };
+        res_receiver.send(res).await?;
+
         Ok(())
     }
 

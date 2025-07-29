@@ -23,6 +23,10 @@ pub enum RpcTypes {
         sub_id: String,
         log: Log,
     },
+    Response {
+        success: bool,
+        message: String,
+    },
 }
 
 /// Errors for RPC operations           
@@ -35,6 +39,8 @@ pub enum RpcTypeError {
     ChainHasNoRpcURL,
     #[error("User subscription is not found")]
     NoSubscriptionFound,
+    #[error("Error while subscription")]
+    SubscriptionError,
 }
 
 #[derive(Clone)]
