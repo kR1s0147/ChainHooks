@@ -1,15 +1,20 @@
-use alloy::network::Ethereum;
-use alloy::primitives::Address;
+use alloy::{
+    network::Ethereum,
+    primitives::Address,
+    providers::{Provider, ProviderBuilder, WsConnect},
+    pubsub::{Subscription, SubscriptionStream},
+    rpc::types::{Filter, Log},
+};
 
-use alloy::providers::{Provider, ProviderBuilder, WsConnect};
-use alloy::pubsub::{Subscription, SubscriptionStream};
-use alloy::rpc::types::Filter;
-use alloy::rpc::types::Log;
 use futures::StreamExt;
-use std::error::Error;
-use std::sync::Arc;
-use tokio::sync::mpsc::{self, Receiver};
-use tokio::sync::{Mutex, oneshot};
+use std::{error::Error, sync::Arc};
+
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Receiver},
+    oneshot,
+};
+
 use tokio_stream::StreamMap;
 use tracing::subscriber;
 pub mod rpc_types;
@@ -18,7 +23,6 @@ use rpc_types::*;
 pub mod relayer;
 
 use crate::rpchandler::transactionTypes::RawTransaction;
-
 pub mod transactionTypes;
 
 pub struct chainRpc {
@@ -84,6 +88,11 @@ impl chainRpc {
                     Some((cmd , res_receiver)) =  command_receiver.recv() => {
                         let mut rpc_locked = rpc_clone.lock().await;
                         if let Err(e) = (&mut *rpc_locked).handlecmd(cmd ,res_receiver, &mut stream_map).await{
+                            let res = RpcTypes::Response{
+                                success : false,
+                                message : "Error while handling the command",
+                            };
+                            res_receiver.send(res).await;
                             eprint!("cmd error :{e}");
                         }
                     }
@@ -133,7 +142,7 @@ impl chainRpc {
                     Ok(sub) => sub,
                     Err(e) => {
                         let res = RpcTypes::Response {
-                            success: False,
+                            success: false,
                             message: "error while subscription",
                         };
                         res_receiver.send(res).await;
@@ -215,20 +224,26 @@ impl RPChandler {
         }
     }
 
-    fn new_chainstate(chainid: usize, url: String) -> ChainState {
-        ChainState {
+    fn new_chainstate(&mut self, chainid: usize, url: String) -> ChainState {
+        let chain = ChainState {
             active: false,
             chain_url: url,
             channel: None,
-        }
+        };
+        self.chain_state.insert(chainid, chain);
     }
+
     async fn build(
         &mut self,
-        chainid: usize,
-        subscription: SubscriptionType,
+        chainid: Vec<usize>,
+        subscription: Vec<SubscriptionType>,
         log_sender: mpsc::Sender<RpcTypes>,
     ) -> Result<(), Box<dyn Error>> {
-        self.new_conn(chainid, subscription, log_sender).await
+        let ziper = chainid.iter().zip(subscription.iter());
+
+        for (chainid, sub) in ziper {
+            self.new_conn(chainid, sub, log_sender.clone()).await
+        }
     }
 
     async fn new_conn(
