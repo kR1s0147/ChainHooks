@@ -46,6 +46,7 @@ pub enum RelayerError {
 
 pub enum UserUpdates {}
 
+#[derive(Clone)]
 pub struct RawTransaction {
     contract_address: String,
     abi: String,

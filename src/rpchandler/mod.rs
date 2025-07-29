@@ -22,6 +22,7 @@ pub mod relayer;
 use crate::rpchandler::transactionTypes::RawTransaction;
 
 pub mod transactionTypes;
+
 pub struct chainRpc {
     chainid: usize,
     subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
@@ -36,8 +37,9 @@ impl chainRpc {
         chainid: usize,
         URL: String,
         subscription: SubscriptionType,
-        command_receiver: mpsc::Receiver<RpcTypes>,
-    ) -> Result<mpsc::Receiver<RpcTypes>, Box<dyn Error>> {
+        command_receiver: mpsc::Receiver<SubscriptionType>,
+        log_sender: mpsc::Sender<RpcTypes>,
+    ) -> Result<(), Box<dyn Error>> {
         // Connecting the RPC node with web sockets
 
         let ws = WsConnect::new(URL);
@@ -47,8 +49,6 @@ impl chainRpc {
             .connect_ws(ws)
             .await?;
 
-        let (rpcevent_sender, rpcevent_receiver) = mpsc::channel::<RpcTypes>(100);
-
         let (user, filter) = Self::getFilter(&subscription);
         let sub = provider.subscribe_logs(&filter).await?;
         let key = sub.local_id().clone().to_string();
@@ -57,7 +57,7 @@ impl chainRpc {
             chainid: chainid,
             subscriptions: Default::default(),
             active_subscriptions: Default::default(),
-            event_sender: rpcevent_sender,
+            event_sender: rlog_sender,
             provider: Box::new(provider),
             number_of_subsciptions: 1,
         };
@@ -65,6 +65,10 @@ impl chainRpc {
         chainrpc
             .active_subscriptions
             .insert(key.clone(), subscription.clone());
+
+        chainrpc
+            .subscriptions
+            .insert(user, vec![(key.clone(), subscription.clone())]);
 
         let chain_rpc = Arc::new(Mutex::new(chainrpc));
         let rpc_clone = chain_rpc.clone();
@@ -90,8 +94,6 @@ impl chainRpc {
                 }
             }
         });
-
-        Ok(rpcevent_receiver)
     }
 
     fn getFilter(subscription: &SubscriptionType) -> (Address, Filter) {
@@ -107,6 +109,7 @@ impl chainRpc {
                     .events(event_signature);
                 (user.clone(), filter)
             }
+            SubscriptionType::Revoke_User { user } => {}
         }
     }
 
@@ -127,21 +130,27 @@ impl chainRpc {
                 self.number_of_subsciptions += 1;
 
                 let subid = sub.local_id().to_string();
+
                 self.active_subscriptions.insert(subid.clone(), cmd.clone());
 
-                let mut usersubs = self.subscriptions.get_mut(&user);
-
-                match usersubs {
-                    Some(subs) => {
-                        subs.push((subid.clone(), cmd));
-                    }
-                    None => {
-                        let d = vec![(subid.clone(), cmd)];
-                        self.subscriptions.insert(user, d);
-                    }
+                if let Some(subs) = self.subscriptions.get_mut(user.clone()) {
+                    subs.push((subid.clone(), cmd.clone()));
+                } else {
+                    self.subscriptions
+                        .insert(user.clone(), vec![(subid.clone(), cmd.clone())])
                 }
 
                 stream_map.insert(subid, sub.into_stream());
+            }
+
+            SubscriptionType::Revoke_User { user } => {
+                if let Some(subs) = self.subscriptions.get(user.clone()) {
+                    for (sub_id, sub) in subs {
+                        stream_map.remove(sub_id);
+                        self.active_subscriptions.remove(sub_id);
+                    }
+                    self.subscriptions.remove(user.clone())
+                }
             }
         }
         Ok(())
@@ -150,23 +159,23 @@ impl chainRpc {
     async fn handleevent(&mut self, event: Log, subid: String) -> Result<(), Box<dyn Error>> {
         let subscription = self.active_subscriptions.get(&subid);
         match subscription {
-            Some(sub) => {
-                let event_string = serde_json::to_string(&event).unwrap();
-                match sub {
-                    SubscriptionType::Subscription {
-                        user,
-                        chainid,
-                        address,
-                        event_signature,
-                    } => {
-                        let rpcevent = RpcTypes::UserLog {
-                            user: user.clone(),
-                            log: event_string,
-                        };
-                        self.event_sender.send(rpcevent).await?;
-                    }
+            Some(sub) => match sub {
+                SubscriptionType::Subscription {
+                    user,
+                    chainid,
+                    address,
+                    event_signature,
+                } => {
+                    let rpcevent = RpcTypes::UserLog {
+                        user: user.clone(),
+                        sub_id: subid,
+                        log: event,
+                    };
+                    self.log_sender.send(rpcevent).await?;
                 }
-            }
+
+                SubscriptionType::Revoke_User { user } => {}
+            },
             None => return Err(Box::new(RpcTypeError::NoSubscriptionFound)),
         }
         Ok(())
@@ -176,7 +185,6 @@ impl chainRpc {
 struct RPChandler {
     available_chains: Vec<usize>,
     chain_state: DashMap<usize, ChainState>,
-    user_logs: DashMap<Address, Vec<UserLogs>>,
 }
 
 impl RPChandler {
@@ -184,7 +192,6 @@ impl RPChandler {
         RPChandler {
             available_chains: Vec::new(),
             chain_state: Default::default(),
-            user_logs: Default::default(),
         }
     }
 
@@ -199,21 +206,31 @@ impl RPChandler {
         &mut self,
         chainid: usize,
         subscription: SubscriptionType,
-    ) -> Result<Receiver<RpcTypes>, Box<dyn Error>> {
-        self.new_conn(chainid, subscription).await
+        log_sender: mpsc::Sender<RpcTypes>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.new_conn(chainid, subscription, log_sender).await
     }
 
     async fn new_conn(
         &mut self,
         chainid: usize,
         subscription: SubscriptionType,
-    ) -> Result<mpsc::Receiver<RpcTypes>, Box<dyn Error>> {
+        log_sender: mpsc::Sender<RpcTypes>,
+    ) -> Result<(), Box<dyn Error>> {
         let chain_state = self.chain_state.get_mut(&chainid);
         match chain_state {
             Some(chainState) => {
                 chainState.active = true;
-                let (command_sender, rpc_receiver) =
-                    chainRpc::new(chainid, chainState.chain_url.clone(), subscription).await?;
+                let (command_receiver, command_sender) = mpsc::channel::<SubscriptionType>(100);
+                chainRpc::new(
+                    chainid,
+                    chainState.chain_url.clone(),
+                    subscription,
+                    command_receiver,
+                    log_sender,
+                )
+                .await?;
+
                 chainState.channel = Some(command_sender);
 
                 return Ok(rpc_receiver);

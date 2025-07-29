@@ -3,12 +3,16 @@ use dashmap::DashMap;
 use std::error::Error;
 use tokio::{sync::mpsc, time};
 
+use crate::rpchandler::rpc_types::RpcTypes;
+
 pub struct RelayerHandler {
     log_receiver: mpsc::Receiver<Log>,
     command_reciever: mpsc::Receiver<RelayerCommand>,
     relayers: DashMap<Address, EthereumWallet>,
     actions: DashMap<String, RawTransaction>,
+    user_logs: Arc<DashMap<Address, Vec<UserLogs>>>,
 }
+
 pub struct UserLogs {
     Message: String,
     time: time::Instant,
@@ -44,9 +48,9 @@ impl RelayerHandler {
                         self.handle_command(command)?
                     }
                     (log, response_receiver) = log_receiver.recv() => {
-                        
+
                         self.handle_log(log,response_receiver).await
-                        
+
                     }
                 }
             }
@@ -75,16 +79,34 @@ impl RelayerHandler {
 
     async fn handle_log(
         &mut self,
-        log: Log,
+        log: RpcTypes,
         response_receiver: Receiver<RelayerCommand>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let addr;
+        let sub_id;
+        let log;
+        match log {
+            RpcTypes::UserLog { user, sub_id, log } => {
+                addr = user;
+                sub_id = sub_id;
+                log = log;
+            }
+        }
+        let raw_tran_op = self.actions.get(sub_id);
+        let raw_tran;
+        match raw_tran_op {
+            Some(tran) => {
+                raw_tran = tran;
+            }
+            None => {}
+        }
 
-        let raw_tran = self.actions.get()
+        let tran_clone = raw_tran.clone();
+        let Eth_Tran = tran_clone.build(log).unwrap();
+        tokio::spawn(async move {});
+
+        Ok(())
     }
-}
-pub struct UserLogs {
-    Message: String,
-    time: time::Instant,
 }
 
 pub enum RelayerCommand {

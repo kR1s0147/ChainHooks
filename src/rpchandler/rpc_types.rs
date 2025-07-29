@@ -4,11 +4,6 @@ use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-pub struct IncomingSubscription {
-    sub: SubscriptionType,
-    signature: String,
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SubscriptionType {
     Subscription {
@@ -16,6 +11,9 @@ pub enum SubscriptionType {
         chainid: usize,
         address: Vec<Address>,
         event_signature: Vec<String>,
+    },
+    Revoke_User {
+        user: Address,
     },
 }
 
