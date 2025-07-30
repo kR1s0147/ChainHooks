@@ -88,11 +88,11 @@ message SubscriptionRequest {
 }
 
 message RelayerAction{
-    int32 chain_id = 1;
-    string target_address = 2;
-    string ABI = 3;
-    string function_name = 4;
-    repeated string params = 5;
+    int32 chain_id = 1; // chain
+    string target_address = 2; // contract address
+    string ABI = 3; // ABI
+    string function_name = 4; // Function name
+    repeated string params = 5; // params for the transaction
 }
 
 
@@ -102,7 +102,6 @@ message SubscriptionResponse {
     string message = 3; 
     google.protobuf.Timestamp created_at = 4;
 }
-
 
 
 message SubscriptionDetails {

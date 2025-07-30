@@ -1,5 +1,5 @@
 use alloy::{
-    network::Ethereum,
+    network::{Ethereum, EthereumWallet},
     primitives::Address,
     providers::{Provider, ProviderBuilder, WsConnect},
     pubsub::{Subscription, SubscriptionStream},
@@ -32,6 +32,7 @@ pub struct chainRpc {
     event_sender: mpsc::Sender<RpcTypes>,
     provider: Box<dyn Provider<Ethereum>>,
     number_of_subsciptions: usize,
+    wallet: Arc<EthereumWallet>,
 }
 
 impl chainRpc {
@@ -45,10 +46,12 @@ impl chainRpc {
         // Connecting the RPC node with web sockets
 
         let ws = WsConnect::new(URL);
-
-        let provider = ProviderBuilder::new()
+        let wallet = Arc::new(EthereumWallet::default());
+        let provider = ProviderBuilder::default()
+            .with_recommended_fillers()
             .with_chain_id(chainid.try_into().unwrap())
             .connect_ws(ws)
+            .wallet(wallet.lock().clone())
             .await?;
 
         let (user, filter) = Self::getFilter(&subscription);
@@ -66,6 +69,7 @@ impl chainRpc {
             event_sender: rlog_sender,
             provider: Box::new(provider),
             number_of_subsciptions: 1,
+            wallet: wallet,
         };
 
         chainrpc
@@ -120,7 +124,7 @@ impl chainRpc {
                     .events(event_signature);
                 (user.clone(), filter)
             }
-            SubscriptionType::Revoke_User { user } => {}
+            _ => {}
         }
     }
 
@@ -172,6 +176,29 @@ impl chainRpc {
                         self.active_subscriptions.remove(sub_id);
                     }
                     self.subscriptions.remove(user.clone())
+                }
+            }
+            SubscriptionType::Transaction { signer, tx } => {
+                if let Some(signer) = self.wallet.signer_by_address(signer.address()) {
+                    let res = self.provider.send_transaction(tx);
+                    tokio::spawn(async move {
+                        let tx_reciept = res.await.unwrap().get_receipt().await;
+                        res_receiver.send(tx_reciept);
+                    })
+                } else {
+                    self.wallet.register_signer(signer);
+                    let res = self.provider.send_transaction(tx);
+                    tokio::spawn(async move {
+                        if let Ok(tx_reciept) = res.await {
+                            if let Ok(receipt) = tx_reciept.get_receipt().await {
+                                let str = match serde_json::to_string(receipt) {
+                                    Ok(t) => t,
+                                    Err(e) => {}
+                                };
+                                res_receiver.send(str);
+                            }
+                        }
+                    })
                 }
             }
         }

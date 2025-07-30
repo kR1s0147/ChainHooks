@@ -56,7 +56,10 @@ pub struct RawTransaction {
 }
 
 impl RawTransaction {
-    fn build_transaction(self, log: Log) -> Result<TransactionRequest, Box<dyn std::error::Error>> {
+    pub fn build_transaction(
+        self,
+        log: Log,
+    ) -> Result<TransactionRequest, Box<dyn std::error::Error>> {
         let contract_addr = Address::from_slice(self.contract_address.as_bytes());
         let ABI: JsonAbi;
 
@@ -78,13 +81,10 @@ impl RawTransaction {
         let topics = log.topics();
         let mut resolved_params: Vec<String> = Vec::new();
 
-        for source in &self.params {
-            let param_str = &source.1;
-
+        for (paramnum, param_str) in &self.params {
             if param_str.starts_with("topic") {
                 let index_str = &param_str[5..];
                 let index: usize = index_str.parse().unwrap();
-
                 let topic_value = topics.get(index);
                 let topic: &FixedBytes<32>;
                 match topic_value {
@@ -103,6 +103,7 @@ impl RawTransaction {
         let data = function.abi_encode_input(&sol_values).unwrap();
 
         let transaction = TransactionRequest::default()
+            .transaction_type(1)
             .to(contract_addr)
             .with_input(Bytes::from(data));
 

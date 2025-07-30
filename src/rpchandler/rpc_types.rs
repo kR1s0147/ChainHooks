@@ -1,5 +1,7 @@
 use alloy::primitives::{Address, ChainId};
-use alloy::rpc::types::{Filter, Log};
+use alloy::rpc::types::{Filter, Log, TransactionRequest};
+use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::local::LocalSigner;
 use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -14,6 +16,10 @@ pub enum SubscriptionType {
     },
     Revoke_User {
         user: Address,
+    },
+    Transaction {
+        signer: LocalSigner<SigningKey>,
+        tx: TransactionRequest,
     },
 }
 

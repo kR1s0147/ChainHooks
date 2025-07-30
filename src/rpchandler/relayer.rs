@@ -1,24 +1,49 @@
-use alloy::{primitives::Address, rpc::types::Log};
+use crate::rpchandler::rpc_types::{RpcTypes, SubscriptionType};
+use crate::transactionTypes::*;
+use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::local::LocalSigner;
+use alloy::{
+    network::{EthereumWallet, NetworkWallet},
+    primitives::Address,
+    rpc::types::Log,
+};
 use dashmap::DashMap;
-use std::error::Error;
-use tokio::{sync::mpsc, time};
-
-use crate::rpchandler::rpc_types::RpcTypes;
+use std::{collections::BTreeMap, default, error::Error};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time,
+};
 
 pub struct RelayerHandler {
+    RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
     log_receiver: mpsc::Receiver<Log>,
-    command_reciever: mpsc::Receiver<RelayerCommand>,
-    relayers: DashMap<Address, EthereumWallet>,
+    command_receiver: mpsc::Receiver<RelayerCommand>,
+    relayers: DashMap<Address, LocalSigner<SigningKey>>,
     actions: DashMap<String, RawTransaction>,
-    user_logs: Arc<DashMap<Address, Vec<UserLogs>>>,
+    user_logs: Arc<DashMap<Address, BTreeMap<UserUpdates>>>,
 }
 
-pub struct UserLogs {
+pub struct UserUpdates {
     Message: String,
+    tx: String,
     time: time::Instant,
 }
 
 impl RelayerHandler {
+    fn new_handler(
+        log_receiver: mpsc::Receiver<RpcTypes::UserLog>,
+        command_receiver: mpsc::Receiver<RelayerCommand>,
+    ) -> Self {
+        RelayerHandler {
+            RpcCommand_sender: Default::default(),
+            log_receiver,
+            command_receiver,
+            relayers: Default::default(),
+            actions: Default::default(),
+            user_logs: Default::default(),
+        }
+    }
+
     fn new_relayer(&mut self, address: String) -> Result<Address, Box<dyn Error>> {
         let addr = match Address::try_from(address.as_bytes()) {
             Ok(add) => add,
@@ -29,9 +54,8 @@ impl RelayerHandler {
             None => {}
         };
         let signer = LocalSigner::random();
-        let relayer = EthereumWallet::new(signer);
 
-        self.relayers.insert(addr, relayer);
+        self.relayers.insert(addr, signer);
 
         Ok(signer.address())
     }
@@ -44,11 +68,10 @@ impl RelayerHandler {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    command = command_receiver.recv() => {
-                        self.handle_command(command)?
+                    Some((command , res_receiver)) = command_receiver.recv() => {
+                        self.handle_command(command,res_receiver).await;
                     }
                     (log, response_receiver) = log_receiver.recv() => {
-
                         self.handle_log(log,response_receiver).await
 
                     }
@@ -60,6 +83,7 @@ impl RelayerHandler {
     async fn handle_command(
         &mut self,
         command: RelayerCommand,
+        res_receiver: oneshot::Sender<RpcTypes::Response>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match command {
             RelayerCommand::Register { user } => {}
@@ -83,27 +107,26 @@ impl RelayerHandler {
         response_receiver: Receiver<RelayerCommand>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let addr;
-        let sub_id;
-        let log;
+        let subid;
+        let Userlog;
         match log {
             RpcTypes::UserLog { user, sub_id, log } => {
                 addr = user;
-                sub_id = sub_id;
-                log = log;
+                subid = sub_id;
+                Userlog = log;
             }
+            _ => {}
         }
-        let raw_tran_op = self.actions.get(sub_id);
-        let raw_tran;
-        match raw_tran_op {
-            Some(tran) => {
-                raw_tran = tran;
-            }
-            None => {}
+        let transaction: RawTransaction;
+        if let Some(raw_tran) = self.actions.get(sub_id) {
+            transaction = raw_tran.clone();
         }
 
-        let tran_clone = raw_tran.clone();
-        let Eth_Tran = tran_clone.build(log).unwrap();
-        tokio::spawn(async move {});
+        if let Some(wallet) = self.relayers.get_mut(&addr) {
+            if let Ok(tran) = transaction.build_transaction(log) {
+                let res = wallet.sign_request(tran).await?;
+            }
+        }
 
         Ok(())
     }
