@@ -48,7 +48,8 @@ pub enum UserUpdates {}
 
 #[derive(Clone)]
 pub struct RawTransaction {
-    contract_address: String,
+    pub chain_id: usize,
+    pub contract_address: String,
     abi: String,
     function_name: String,
     function_signature: String,
@@ -56,6 +57,23 @@ pub struct RawTransaction {
 }
 
 impl RawTransaction {
+    pub fn new(
+        chain_id: usize,
+        contract_address: String,
+        abi: Strnig,
+        function_name: String,
+        function_signature: String,
+        params: Vec<(usize, String)>,
+    ) -> Self {
+        RawTransaction {
+            chain_id,
+            contract_address,
+            abi,
+            function_name,
+            function_signature,
+            params,
+        }
+    }
     pub fn build_transaction(
         self,
         log: Log,

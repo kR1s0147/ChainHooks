@@ -32,7 +32,7 @@ pub struct chainRpc {
     event_sender: mpsc::Sender<RpcTypes>,
     provider: Box<dyn Provider<Ethereum>>,
     number_of_subsciptions: usize,
-    wallet: Arc<EthereumWallet>,
+    wallet: Arc<Mutex<EthereumWallet>>,
 }
 
 impl chainRpc {
@@ -179,14 +179,22 @@ impl chainRpc {
                 }
             }
             SubscriptionType::Transaction { signer, tx } => {
-                if let Some(signer) = self.wallet.signer_by_address(signer.address()) {
+                let wallet = self.wallet.lock().await;
+                if let Some(signer) = wallet.signer_by_address(signer.address()) {
                     let res = self.provider.send_transaction(tx);
                     tokio::spawn(async move {
-                        let tx_reciept = res.await.unwrap().get_receipt().await;
-                        res_receiver.send(tx_reciept);
+                        if let Ok(tx_reciept) = res.await {
+                            if let Ok(receipt) = tx_reciept.get_receipt().await {
+                                let str = match serde_json::to_string(receipt) {
+                                    Ok(t) => t,
+                                    Err(e) => {}
+                                };
+                                res_receiver.send(str);
+                            }
+                        }
                     })
                 } else {
-                    self.wallet.register_signer(signer);
+                    wallet.register_signer(signer);
                     let res = self.provider.send_transaction(tx);
                     tokio::spawn(async move {
                         if let Ok(tx_reciept) = res.await {
@@ -201,6 +209,8 @@ impl chainRpc {
                     })
                 }
             }
+
+            _ => {}
         }
 
         let res = RpcTypes::Response {

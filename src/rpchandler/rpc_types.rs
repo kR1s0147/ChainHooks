@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize, de};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use crate::rpchandler::relayer::UserUpdates;
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SubscriptionType {
     Subscription {
@@ -21,6 +23,11 @@ pub enum SubscriptionType {
         signer: LocalSigner<SigningKey>,
         tx: TransactionRequest,
     },
+
+    Revoke_Sub {
+        user: Address,
+        subs: String,
+    },
 }
 
 pub enum RpcTypes {
@@ -32,6 +39,9 @@ pub enum RpcTypes {
     Response {
         success: bool,
         message: String,
+    },
+    Logs {
+        logs: Vec<UserUpdates>,
     },
 }
 

@@ -1,5 +1,6 @@
 use crate::rpchandler::rpc_types::{RpcTypes, SubscriptionType};
 use crate::transactionTypes::*;
+use alloy::network::TransactionBuilder;
 use alloy::signers::k256::ecdsa::SigningKey;
 use alloy::signers::local::LocalSigner;
 use alloy::{
@@ -8,9 +9,12 @@ use alloy::{
     rpc::types::Log,
 };
 use dashmap::DashMap;
+use std::ops::Add;
+use std::str::FromStr;
+use std::sync::Arc;
 use std::{collections::BTreeMap, default, error::Error};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{Mutex, mpsc, oneshot},
     time,
 };
 
@@ -18,15 +22,19 @@ pub struct RelayerHandler {
     RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
     log_receiver: mpsc::Receiver<Log>,
     command_receiver: mpsc::Receiver<RelayerCommand>,
-    relayers: DashMap<Address, LocalSigner<SigningKey>>,
+    relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
-    user_logs: Arc<DashMap<Address, BTreeMap<UserUpdates>>>,
+    user_logs: Arc<Mutex<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>>,
+}
+
+pub struct UserInfo {
+    signer: LocalSigner<SigningKey>,
+    subs: Vec<String>,
 }
 
 pub struct UserUpdates {
     Message: String,
     tx: String,
-    time: time::Instant,
 }
 
 impl RelayerHandler {
@@ -86,18 +94,75 @@ impl RelayerHandler {
         res_receiver: oneshot::Sender<RpcTypes::Response>,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         match command {
-            RelayerCommand::Register { user } => {}
-            RelayerCommand::GetLogs { user } => {}
-            RelayerCommand::UnRegister { user } => {}
+            RelayerCommand::Register { user } => self.register(user),
+            RelayerCommand::GetLogs { user, time } => {
+                let addr: Address;
+                if let Some(addr_) = Address::from_str(user) {
+                    addr = addr_;
+                }
+                let logs = self.user_logs.lock().await;
+                if let Some(map) = logs.get(addr) {
+                    let res_logs = Vec::new();
+                    for (i, logs) in map.range(time..) {
+                        res_logs.push(logs.clone());
+                    }
+                    res_receiver.send(RpcTypes::Logs { logs: res_logs }).await
+                }
+            }
             RelayerCommand::DefineRelayerAction {
+                user,
                 sub_id,
                 chainid,
                 target_address,
                 ABI,
                 function_name,
+                function_signature,
                 Params,
-            } => {}
-            RelayerCommand::Revoke_Relayer_Action { user, sub_id } => {}
+            } => {
+                let raw_tran = RawTransaction::new(
+                    chainid,
+                    target_address,
+                    ABI,
+                    function_name,
+                    function_signature,
+                    params,
+                );
+                if let Some(addr) = Address::from_str(user) {
+                    self.actions.insert(sub_id, raw_tran);
+                    if let Some(userinfo) = self.relayers.get_mut(addr) {
+                        userinfo.subs.push(sub_id);
+                    }
+                    res_receiver
+                        .send(RpcTypes::Response {
+                            success: true,
+                            message: "SuccessFully added",
+                        })
+                        .await;
+                }
+            }
+            RelayerCommand::Revoke_Subscription { user, sub_id } => {
+                if let Some(addr) = Address::from_str(user) {
+                    if let Some(userinfo) = self.relayers.get_mut(addr) {
+                        if let Some(tran) = self.actions.get(sub_id) {
+                            let send = SubscriptionType::Revoke_Sub {
+                                user: user,
+                                subs: sub_id,
+                            };
+                            self.actions.remove(sub_id);
+                            userinfo.subs.retain(|s| s != sub_id);
+                            let chainid = tran.chain_id;
+                            if let Some(ch) = self.RpcCommand_sender.get_mut(&chainid) {
+                                ch.send(send).await;
+                            }
+
+                            res_receiver.send(RpcTypes::Response {
+                                success: true,
+                                message: "Revoked the Subscription",
+                            })
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -124,10 +189,18 @@ impl RelayerHandler {
 
         if let Some(wallet) = self.relayers.get_mut(&addr) {
             if let Ok(tran) = transaction.build_transaction(log) {
-                let res = wallet.sign_request(tran).await?;
+                let s = wallet.clone();
+                tran.with_from(s.address())
+                    .with_chain_id(transaction.chain_id);
+                let res = SubscriptionType::Transaction {
+                    signer: s,
+                    tx: tran,
+                };
+                if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
+                    ch.send(res).await
+                }
             }
         }
-
         Ok(())
     }
 }
@@ -136,22 +209,21 @@ pub enum RelayerCommand {
     Register {
         user: String,
     },
-    UnRegister {
-        user: String,
-    },
     GetLogs {
         user: String,
+        time: time::Instant,
     },
     DefineRelayerAction {
+        user: String,
         sub_id: String,
         chainid: int,
         target_address: String,
         ABI: String,
         function_name: String,
+        function_signature: String,
         Params: Vec<String>,
     },
-
-    Revoke_Relayer_Action {
+    Revoke_Subscription {
         user: String,
         sub_id: String,
     },
