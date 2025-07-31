@@ -15,10 +15,7 @@ service ChainHooks {
 
     
     rpc GetRelayer(UserAuthRequest) returns (RelayerInfo);
-
     
-    rpc UnRegister(UserAuthRequest) returns (UserRegistrationResponse); 
-
    
     rpc GetLogs(GetUserLogsRequest) returns (UserLogs); 
 

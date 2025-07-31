@@ -18,6 +18,15 @@ use tokio::{
     time,
 };
 
+pub struct UserInfo {
+    pub signer: LocalSigner<SigningKey>,
+    pub subs: Vec<String>,
+}
+
+pub struct UserUpdates {
+    pub Message: String,
+    pub tx: String,
+}
 pub struct RelayerHandler {
     RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
     log_receiver: mpsc::Receiver<Log>,
@@ -25,16 +34,6 @@ pub struct RelayerHandler {
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
     user_logs: Arc<Mutex<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>>,
-}
-
-pub struct UserInfo {
-    signer: LocalSigner<SigningKey>,
-    subs: Vec<String>,
-}
-
-pub struct UserUpdates {
-    Message: String,
-    tx: String,
 }
 
 impl RelayerHandler {
@@ -145,7 +144,7 @@ impl RelayerHandler {
                     if let Some(userinfo) = self.relayers.get_mut(addr) {
                         if let Some(tran) = self.actions.get(sub_id) {
                             let send = SubscriptionType::Revoke_Sub {
-                                user: user,
+                                user: addr,
                                 subs: sub_id,
                             };
                             self.actions.remove(sub_id);
@@ -190,11 +189,14 @@ impl RelayerHandler {
         if let Some(wallet) = self.relayers.get_mut(&addr) {
             if let Ok(tran) = transaction.build_transaction(log) {
                 let s = wallet.clone();
+                let db = self.user_logs.clone();
                 tran.with_from(s.address())
                     .with_chain_id(transaction.chain_id);
                 let res = SubscriptionType::Transaction {
+                    user: addr.clone(),
                     signer: s,
                     tx: tran,
+                    db: db,
                 };
                 if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
                     ch.send(res).await

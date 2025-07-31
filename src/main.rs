@@ -7,9 +7,8 @@ use std::time::Instant;
 
 use alloy::primitives::Address;
 use dashmap::DashMap;
-use eyre::Ok;
 use rand::TryRngCore;
-use tokio::net::unix::pipe::Sender;
+
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tonic::{Request, Response, Status, transport::Server};
@@ -84,13 +83,7 @@ impl ChainHooks for RelayerService {
         };
 
         let relayer_cmd = RelayerCommand::Register { user: user_addr };
-        let res = self.RelayerCommand_sender.send(relayer_cmd).await?;
-    }
-
-    async fn un_register(
-        &mut self,
-        userRequest: Request<UserAuthRequest>,
-    ) -> Response<UserRegistrationResponse> {
+        let res = self.RelayerCommand_sender.send(relayer_cmd);
     }
 
     async fn get_relayer(

@@ -1,12 +1,18 @@
+use std::ops::Add;
+use std::sync::Arc;
+
+use crate::rpchandler::relayer::UserUpdates;
 use alloy::primitives::{Address, ChainId};
 use alloy::rpc::types::{Filter, Log, TransactionRequest};
 use alloy::signers::k256::ecdsa::SigningKey;
+use alloy::signers::k256::sha2::digest::const_oid::Arc;
 use alloy::signers::local::LocalSigner;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize, de};
+use std::collections::BTreeMap;
+use std::time;
 use thiserror::Error;
-use tokio::sync::mpsc;
-
-use crate::rpchandler::relayer::UserUpdates;
+use tokio::sync::{Mutex, mpsc};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum SubscriptionType {
@@ -16,14 +22,12 @@ pub enum SubscriptionType {
         address: Vec<Address>,
         event_signature: Vec<String>,
     },
-    Revoke_User {
-        user: Address,
-    },
     Transaction {
+        user: Address,
         signer: LocalSigner<SigningKey>,
         tx: TransactionRequest,
+        db: Arc<Mutex<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>>,
     },
-
     Revoke_Sub {
         user: Address,
         subs: String,

@@ -9,10 +9,13 @@ use alloy::{
 use futures::StreamExt;
 use std::{error::Error, sync::Arc};
 
-use tokio::sync::{
-    Mutex,
-    mpsc::{self, Receiver},
-    oneshot,
+use tokio::{
+    sync::{
+        Mutex,
+        mpsc::{self, Receiver},
+        oneshot,
+    },
+    time,
 };
 
 use tokio_stream::StreamMap;
@@ -21,8 +24,11 @@ pub mod rpc_types;
 use dashmap::DashMap;
 use rpc_types::*;
 pub mod relayer;
-
-use crate::rpchandler::transactionTypes::RawTransaction;
+use crate::{
+    chainhooks::UserRegistrationResponse,
+    rpchandler::{relayer::UserUpdates, transactionTypes::RawTransaction},
+};
+use std::collections::BTreeMap;
 pub mod transactionTypes;
 
 pub struct chainRpc {
@@ -169,48 +175,51 @@ impl chainRpc {
                 stream_map.insert(subid, sub.into_stream());
             }
 
-            SubscriptionType::Revoke_User { user } => {
-                if let Some(subs) = self.subscriptions.get(user.clone()) {
-                    for (sub_id, sub) in subs {
-                        stream_map.remove(sub_id);
-                        self.active_subscriptions.remove(sub_id);
-                    }
-                    self.subscriptions.remove(user.clone())
-                }
-            }
-            SubscriptionType::Transaction { signer, tx } => {
+            SubscriptionType::Transaction {
+                user,
+                signer,
+                tx,
+                db,
+            } => {
                 let wallet = self.wallet.lock().await;
-                if let Some(signer) = wallet.signer_by_address(signer.address()) {
-                    let res = self.provider.send_transaction(tx);
-                    tokio::spawn(async move {
-                        if let Ok(tx_reciept) = res.await {
-                            if let Ok(receipt) = tx_reciept.get_receipt().await {
-                                let str = match serde_json::to_string(receipt) {
-                                    Ok(t) => t,
-                                    Err(e) => {}
-                                };
-                                res_receiver.send(str);
-                            }
-                        }
-                    })
-                } else {
+                if let None = wallet.signer_by_address(signer.address()) {
                     wallet.register_signer(signer);
-                    let res = self.provider.send_transaction(tx);
-                    tokio::spawn(async move {
-                        if let Ok(tx_reciept) = res.await {
-                            if let Ok(receipt) = tx_reciept.get_receipt().await {
-                                let str = match serde_json::to_string(receipt) {
-                                    Ok(t) => t,
-                                    Err(e) => {}
-                                };
-                                res_receiver.send(str);
-                            }
-                        }
-                    })
                 }
+
+                let res = self.provider.send_transaction(tx);
+                tokio::spawn(async move {
+                    if let Ok(tx_reciept) = res.await {
+                        let tx_hash = tx_reciept.tx_hash();
+                        if let Ok(receipt) = tx_reciept.get_receipt().await {
+                            let str = match serde_json::to_string(receipt) {
+                                Ok(t) => t,
+                                Err(e) => {}
+                            };
+                            if let Some(t) = db.lock().await.get_mut(user) {
+                                let update = UserUpdates {
+                                    Message: str,
+                                    tx: tx_hash.to_string(),
+                                };
+                                t.insert(time::Instant, value)
+                            }
+                            res_receiver.send(str);
+                        }
+                    }
+                })
             }
 
-            _ => {}
+            SubscriptionType::Revoke_Sub { user, subs } => {
+                self.active_subscriptions.remove(subs);
+                self.number_of_subsciptions -= 1;
+                if let Some(user_subs) = self.subscriptions.get(user) {
+                    user_subs.retain(|(s, _)| s != subs);
+                }
+                stream_map.remove(subs);
+                res_receiver.send(RpcTypes::Response {
+                    success: true,
+                    message: "removed the subscription",
+                })
+            }
         }
 
         let res = RpcTypes::Response {
