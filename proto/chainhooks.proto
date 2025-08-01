@@ -64,16 +64,11 @@ message GetUserLogsRequest {
 }
 
 
-message LogEntry {
-    google.protobuf.Timestamp timestamp = 1;                  
-    string message = 3;                     
-    string subscription_id = 4;                    
-}
 
 
 message UserLogs {
     string address = 1; 
-    repeated LogEntry logs = 2; 
+    repeated string logs = 2; 
 }
 
 

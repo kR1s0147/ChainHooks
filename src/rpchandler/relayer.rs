@@ -30,10 +30,10 @@ pub struct UserUpdates {
 pub struct RelayerHandler {
     RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
     log_receiver: mpsc::Receiver<Log>,
-    command_receiver: mpsc::Receiver<RelayerCommand>,
+    command_receiver: mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
-    user_logs: Arc<Mutex<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>>,
+    user_logs: DashMap<Address, BTreeMap<time::Instant, UserUpdates>>,
 }
 
 impl RelayerHandler {
@@ -78,8 +78,8 @@ impl RelayerHandler {
                     Some((command , res_receiver)) = command_receiver.recv() => {
                         self.handle_command(command,res_receiver).await;
                     }
-                    (log, response_receiver) = log_receiver.recv() => {
-                        self.handle_log(log,response_receiver).await
+                    log = log_receiver.recv() => {
+                        self.handle_log(log).await
 
                     }
                 }
@@ -115,17 +115,10 @@ impl RelayerHandler {
                 target_address,
                 ABI,
                 function_name,
-                function_signature,
                 Params,
             } => {
-                let raw_tran = RawTransaction::new(
-                    chainid,
-                    target_address,
-                    ABI,
-                    function_name,
-                    function_signature,
-                    params,
-                );
+                let raw_tran =
+                    RawTransaction::new(chainid, target_address, ABI, function_name, params);
                 if let Some(addr) = Address::from_str(user) {
                     self.actions.insert(sub_id, raw_tran);
                     if let Some(userinfo) = self.relayers.get_mut(addr) {
@@ -162,14 +155,24 @@ impl RelayerHandler {
                     }
                 }
             }
+
+            RelayerCommand::Get_RalyerInfo { user } => {
+                if let Some(addr) = Address::from_str(user) {
+                    if let Some(info) = self.relayers.get(addr) {
+                        let signer = info.signer.address();
+                        res_receiver
+                            .send(RpcTypes::Response {
+                                success: true,
+                                message: signer.to_string(),
+                            })
+                            .await
+                    }
+                }
+            }
         }
     }
 
-    async fn handle_log(
-        &mut self,
-        log: RpcTypes,
-        response_receiver: Receiver<RelayerCommand>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn handle_log(&mut self, log: RpcTypes) -> Result<(), Box<dyn Error + Send + Sync>> {
         let addr;
         let subid;
         let Userlog;
@@ -189,17 +192,20 @@ impl RelayerHandler {
         if let Some(wallet) = self.relayers.get_mut(&addr) {
             if let Ok(tran) = transaction.build_transaction(log) {
                 let s = wallet.clone();
-                let db = self.user_logs.clone();
+                let db = &self.user_logs;
                 tran.with_from(s.address())
                     .with_chain_id(transaction.chain_id);
+
                 let res = SubscriptionType::Transaction {
                     user: addr.clone(),
                     signer: s,
                     tx: tran,
                     db: db,
                 };
+
                 if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
-                    ch.send(res).await
+                    let (_, sender) = oneshot::channel::<RpcTypes>();
+                    ch.send((res, sender)).await
                 }
             }
         }
@@ -222,11 +228,13 @@ pub enum RelayerCommand {
         target_address: String,
         ABI: String,
         function_name: String,
-        function_signature: String,
         Params: Vec<String>,
     },
     Revoke_Subscription {
         user: String,
         sub_id: String,
+    },
+    Get_RalyerInfo {
+        user: String,
     },
 }

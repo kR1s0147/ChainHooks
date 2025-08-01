@@ -15,7 +15,7 @@ use thiserror::Error;
 use tokio::sync::{Mutex, mpsc};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub enum SubscriptionType {
+pub enum SubscriptionType<'a> {
     Subscription {
         user: Address,
         chainid: usize,
@@ -26,7 +26,7 @@ pub enum SubscriptionType {
         user: Address,
         signer: LocalSigner<SigningKey>,
         tx: TransactionRequest,
-        db: Arc<Mutex<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>>,
+        db: &'a DashMap<Address, BTreeMap<time::Instant, UserUpdates>>,
     },
     Revoke_Sub {
         user: Address,

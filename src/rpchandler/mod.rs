@@ -1,13 +1,19 @@
 use alloy::{
     network::{Ethereum, EthereumWallet},
     primitives::Address,
-    providers::{Provider, ProviderBuilder, WsConnect},
+    providers::{
+        DynProvider, Identity, Provider, ProviderBuilder, RootProvider, WalletProvider, WsConnect,
+        fillers::{
+            BlobGasFiller, ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller,
+            WalletFiller,
+        },
+    },
     pubsub::{Subscription, SubscriptionStream},
-    rpc::types::{Filter, Log},
+    rpc::types::{EIP1186StorageProof, Filter, Log},
 };
 
 use futures::StreamExt;
-use std::{error::Error, sync::Arc};
+use std::{cell::RefCell, default, error::Error, sync::Arc};
 
 use tokio::{
     sync::{
@@ -31,14 +37,27 @@ use crate::{
 use std::collections::BTreeMap;
 pub mod transactionTypes;
 
+type providerType = FillProvider<
+    JoinFill<
+        JoinFill<
+            JoinFill<
+                Identity,
+                JoinFill<GasFiller, JoinFill<BlobGasFiller, JoinFill<NonceFiller, ChainIdFiller>>>,
+            >,
+            ChainIdFiller,
+        >,
+        WalletFiller<EthereumWallet>,
+    >,
+    RootProvider,
+>;
+
 pub struct chainRpc {
     chainid: usize,
     subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
     active_subscriptions: DashMap<String, SubscriptionType>,
-    event_sender: mpsc::Sender<RpcTypes>,
-    provider: Box<dyn Provider<Ethereum>>,
+    event_sender: mpsc::Sender<Log>,
+    provider: providerType,
     number_of_subsciptions: usize,
-    wallet: Arc<Mutex<EthereumWallet>>,
 }
 
 impl chainRpc {
@@ -46,18 +65,18 @@ impl chainRpc {
         chainid: usize,
         URL: String,
         subscription: SubscriptionType,
-        command_receiver: mpsc::Receiver<SubscriptionType>,
+        command_receiver: mpsc::Receiver<(SubscriptionType, oneshot::Sender<RpcTypes>)>,
         log_sender: mpsc::Sender<RpcTypes>,
     ) -> Result<(), Box<dyn Error>> {
         // Connecting the RPC node with web sockets
 
         let ws = WsConnect::new(URL);
-        let wallet = Arc::new(EthereumWallet::default());
-        let provider = ProviderBuilder::default()
-            .with_recommended_fillers()
+        let wallet = EthereumWallet::default();
+
+        let provider = ProviderBuilder::new()
             .with_chain_id(chainid.try_into().unwrap())
+            .wallet(wallet)
             .connect_ws(ws)
-            .wallet(wallet.lock().clone())
             .await?;
 
         let (user, filter) = Self::getFilter(&subscription);
@@ -73,9 +92,8 @@ impl chainRpc {
             subscriptions: Default::default(),
             active_subscriptions: Default::default(),
             event_sender: rlog_sender,
-            provider: Box::new(provider),
+            provider: provider,
             number_of_subsciptions: 1,
-            wallet: wallet,
         };
 
         chainrpc
@@ -148,7 +166,8 @@ impl chainRpc {
                 event_signature,
             } => {
                 let (user, filter) = Self::getFilter(&cmd);
-                let sub = match provider.subscribe_logs(&filter).await {
+
+                let sub = match self.provider.subscribe_logs(&filter).await {
                     Ok(sub) => sub,
                     Err(e) => {
                         let res = RpcTypes::Response {
@@ -172,6 +191,11 @@ impl chainRpc {
                         .insert(user.clone(), vec![(subid.clone(), cmd.clone())])
                 }
 
+                let res = RpcTypes::Response {
+                    success: true,
+                    message: subid,
+                };
+                res_receiver.send(res);
                 stream_map.insert(subid, sub.into_stream());
             }
 
@@ -181,7 +205,7 @@ impl chainRpc {
                 tx,
                 db,
             } => {
-                let wallet = self.wallet.lock().await;
+                let wallet = self.provider.wallet_mut();
                 if let None = wallet.signer_by_address(signer.address()) {
                     wallet.register_signer(signer);
                 }
@@ -202,7 +226,6 @@ impl chainRpc {
                                 };
                                 t.insert(time::Instant, value)
                             }
-                            res_receiver.send(str);
                         }
                     }
                 })
@@ -257,9 +280,9 @@ impl chainRpc {
     }
 }
 
-struct RPChandler {
-    available_chains: Vec<usize>,
-    chain_state: DashMap<usize, ChainState>,
+pub struct RPChandler {
+    pub available_chains: Vec<usize>,
+    pub chain_state: DashMap<usize, ChainState>,
 }
 
 impl RPChandler {

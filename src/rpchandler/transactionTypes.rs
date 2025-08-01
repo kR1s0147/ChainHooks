@@ -52,7 +52,6 @@ pub struct RawTransaction {
     pub contract_address: String,
     abi: String,
     function_name: String,
-    function_signature: String,
     params: Vec<(usize, String)>,
 }
 
@@ -62,7 +61,6 @@ impl RawTransaction {
         contract_address: String,
         abi: Strnig,
         function_name: String,
-        function_signature: String,
         params: Vec<(usize, String)>,
     ) -> Self {
         RawTransaction {
@@ -70,7 +68,6 @@ impl RawTransaction {
             contract_address,
             abi,
             function_name,
-            function_signature,
             params,
         }
     }
@@ -121,7 +118,6 @@ impl RawTransaction {
         let data = function.abi_encode_input(&sol_values).unwrap();
 
         let transaction = TransactionRequest::default()
-            .transaction_type(1)
             .to(contract_addr)
             .with_input(Bytes::from(data));
 
