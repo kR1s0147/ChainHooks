@@ -27,17 +27,18 @@ pub struct UserUpdates {
     pub Message: String,
     pub tx: String,
 }
+
 pub struct RelayerHandler {
     RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
-    log_receiver: mpsc::Receiver<Log>,
-    command_receiver: mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
+    log_receiver: Mutex<mpsc::Receiver<Log>>,
+    command_receiver: Mutex<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
     user_logs: DashMap<Address, BTreeMap<time::Instant, UserUpdates>>,
 }
 
 impl RelayerHandler {
-    fn new_handler(
+    pub fn new_handler(
         log_receiver: mpsc::Receiver<RpcTypes::UserLog>,
         command_receiver: mpsc::Receiver<RelayerCommand>,
     ) -> Self {
@@ -67,11 +68,14 @@ impl RelayerHandler {
         Ok(signer.address())
     }
 
-    async fn register(&mut self, user: Address) -> Result<Address, Box<dyn Error + Send + Sync>> {
+    pub async fn register(
+        &mut self,
+        user: Address,
+    ) -> Result<Address, Box<dyn Error + Send + Sync>> {
         self.new_relayer(address)
     }
 
-    async fn run(&mut self) -> Result<(), Box<dyn Error + send + sync>> {
+    pub async fn run(&mut self) -> Result<(), Box<dyn Error + send + sync>> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {

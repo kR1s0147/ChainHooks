@@ -1,8 +1,9 @@
 #![allow(warnings)]
-use crate::rpchandler::relayer::RelayerCommand;
+use crate::rpchandler::relayer::{RelayerCommand, RelayerHandler};
 use crate::rpchandler::rpc_types::{RpcTypes, SubscriptionType};
+use std::collections::HashMap;
+use std::env;
 use std::error::Error;
-use std::ops::Add;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -10,8 +11,8 @@ use std::time::{Duration, Instant};
 use alloy::dyn_abi::ErrorExt;
 use alloy::primitives::{Address, Signature};
 
+use alloy::rpc::types::Log;
 use dashmap::DashMap;
-
 use rand::TryRngCore;
 
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -26,11 +27,13 @@ pub mod chainhooks {
 use chainhooks::chain_hooks_server::{ChainHooks, ChainHooksServer};
 use chainhooks::*;
 
+use dotenv::dotenv;
+
 #[derive(Default)]
 pub struct RelayerService {
-    user_nonce: DashMap<Address, UserNonce>,
-    RelayerCommand_sender: mpsc::Sender<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
-    RpcHandler: RPChandler,
+    user_nonce: Arc<DashMap<Address, UserNonce>>,
+    RelayerCommand_sender: Arc<mpsc::Sender<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
+    RpcHandler: Arc<Mutex<RPChandler>>,
 }
 
 struct UserNonce {
@@ -86,7 +89,12 @@ impl ChainHooks for RelayerService {
                 return Response::new(res);
             }
         };
-
+        let usertx = UserTx::new(req.address, req.signature);
+        if let Some(n) = self.user_nonce.get(&addr) {
+            if !usertx.VerifyUser(n.nonce) {
+                return Err(Status::permission_denied("Not Authenticated"));
+            }
+        }
         let relayer_cmd = RelayerCommand::Register { user: user_addr };
         let res = self.RelayerCommand_sender.send(relayer_cmd);
     }
@@ -98,7 +106,15 @@ impl ChainHooks for RelayerService {
         // Relayer Info (pun key)
         /// Send command to Relayer
         /// receive the infomation
-        let user = userRequest.into_inner().address;
+        let req = userRequest.into_inner();
+        let user = req.address;
+        let addr = Address::from_str(&user).unwrap();
+        if let Some(n) = self.user_nonce.get(&addr) {
+            if !usertx.VerifyUser(n.nonce) {
+                return Err(Status::permission_denied("Not Authenticated"));
+            }
+        }
+
         let req = RelayerCommand::Get_RalyerInfo { user };
         let (rx, tx) = oneshot::channel::<RpcTypes>();
         self.RelayerCommand_sender.send((req, rx));
@@ -122,7 +138,12 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<UserLogs>, Status> {
         let user = userRequest.into_inner().address;
         let time = userRequest.into_inner().start_time.unwrap();
-
+        let addr = Address::from_str(&user).unwrap();
+        if let Some(n) = self.user_nonce.get(&addr) {
+            if !usertx.VerifyUser(n.nonce) {
+                return Err(Status::permission_denied("Not Authenticated"));
+            }
+        }
         let req = RelayerCommand::GetLogs {
             user,
             time: time::Instant::checked_add(&self, Duration::from_secs(time.seconds)).unwrap(),
@@ -148,6 +169,11 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<SubscriptionResponse>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
+        if let Some(n) = self.user_nonce.get(&user) {
+            if !usertx.VerifyUser(n.nonce) {
+                return Err(Status::permission_denied("Not Authenticated"));
+            }
+        }
         let sub = req.details.unwrap();
         let rpc_command = SubscriptionType::Subscription {
             user,
@@ -212,6 +238,11 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<bool>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
+        if let Some(n) = self.user_nonce.get(&user) {
+            if !usertx.VerifyUser(n.nonce) {
+                return Err(Status::permission_denied("Not Authenticated"));
+            }
+        }
         let relayer_command = RelayerCommand::Revoke_Subscription {
             user: req.address,
             sub_id: req.subscription_id,
@@ -259,5 +290,40 @@ impl UserTx {
     }
 }
 
+// pub fn Intialize() -> RelayerService {
+//     dotenv().ok();
+
+//     let chains = [
+//         (1, "ETHEREUM"),
+//         (137, "POLYGON"),
+//         (42161, "ARBITRUM"),
+//         (10, "OPTIMISM"),
+//         (11155111, "SEPOLIA"),
+//     ];
+
+//     let available_chains: HashMap<_, _> = chains.into_iter().collect();
+
+//     let available_chains = vec![1, 137.10, 42161, 11155111];
+
+//     let mut rpc_handler = RPChandler::new(available_chains);
+
+//     for (chain, name) in chains {
+//         if let Some(url) = env::var(name) {
+//             rpc_handler.new_chainstate(chain, url);
+//         }
+//     }
+
+//     let (log_tx, log_rx) = mpsc::channel::<Log>(100);
+
+//     let (relayer_tx, relayer_rx) =
+//         mpsc::channel::<(RelayerCommand, oneshot::Sender<RpcTypes>)>(100);
+
+//     let relayer_service = RelayerHandler::new_handler(log_rx, relayer_rx);
+
+//     let Subscriptions = SubscriptionType::Subscription { user: , chainid: (), address: (), event_signature: () }
+// }
+
 #[tokio::main]
-async fn main() {}
+async fn main() {
+    // let handler = Intialize();
+}

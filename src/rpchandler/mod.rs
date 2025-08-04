@@ -51,12 +51,13 @@ type providerType = FillProvider<
     RootProvider,
 >;
 
+#[derive(Clone)]
 pub struct chainRpc {
     chainid: usize,
     subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
     active_subscriptions: DashMap<String, SubscriptionType>,
     event_sender: mpsc::Sender<Log>,
-    provider: providerType,
+    provider: Mutex<providerType>,
     number_of_subsciptions: usize,
 }
 
@@ -91,7 +92,7 @@ impl chainRpc {
             chainid: chainid,
             subscriptions: Default::default(),
             active_subscriptions: Default::default(),
-            event_sender: rlog_sender,
+            event_sender: log_sender,
             provider: provider,
             number_of_subsciptions: 1,
         };
@@ -104,7 +105,7 @@ impl chainRpc {
             .subscriptions
             .insert(user, vec![(key.clone(), subscription.clone())]);
 
-        let chain_rpc = Arc::new(Mutex::new(chainrpc));
+        let chain_rpc = Arc::new(chainrpc);
         let rpc_clone = chain_rpc.clone();
         let mut stream_map = StreamMap::new();
 
@@ -114,8 +115,8 @@ impl chainRpc {
             loop {
                 tokio::select! {
                     Some((cmd , res_receiver)) =  command_receiver.recv() => {
-                        let mut rpc_locked = rpc_clone.lock().await;
-                        if let Err(e) = (&mut *rpc_locked).handlecmd(cmd ,res_receiver, &mut stream_map).await{
+                        let mut rpc_cloned = rpc_clone.clone();
+                        if let Err(e) = rpc_cloned.handlecmd(cmd ,res_receiver, &mut stream_map).await{
                             let res = RpcTypes::Response{
                                 success : false,
                                 message : "Error while handling the command",
@@ -125,8 +126,8 @@ impl chainRpc {
                         }
                     }
                     Some((subid,event)) = stream_map.next() => {
-                        let mut rpc_locked = rpc_clone.lock().await;
-                        if let Err(e) = (&mut *rpc_locked).handleevent(event,subid).await{
+                        let mut rpc_locked = rpc_clone.clone();
+                        if let Err(e) = rpc_locked.handleevent(event,subid).await{
                             eprint!("cmd error :{e}");
                         }
                     }
@@ -167,7 +168,7 @@ impl chainRpc {
             } => {
                 let (user, filter) = Self::getFilter(&cmd);
 
-                let sub = match self.provider.subscribe_logs(&filter).await {
+                let sub = match self.provider.lock().await.subscribe_logs(&filter).await {
                     Ok(sub) => sub,
                     Err(e) => {
                         let res = RpcTypes::Response {
@@ -178,7 +179,7 @@ impl chainRpc {
                         return Err(Box::new(RpcTypeError::SubscriptionError));
                     }
                 };
-                self.number_of_subsciptions += 1;
+                *self.number_of_subsciptions.lock().await += 1;
 
                 let subid = sub.local_id().to_string();
 
@@ -205,12 +206,12 @@ impl chainRpc {
                 tx,
                 db,
             } => {
-                let wallet = self.provider.wallet_mut();
+                let provider = self.provider.lock().await;
+                let wallet = provider.wallet_mut();
                 if let None = wallet.signer_by_address(signer.address()) {
                     wallet.register_signer(signer);
                 }
-
-                let res = self.provider.send_transaction(tx);
+                let res = provider.send_transaction(tx);
                 tokio::spawn(async move {
                     if let Ok(tx_reciept) = res.await {
                         let tx_hash = tx_reciept.tx_hash();
@@ -233,7 +234,7 @@ impl chainRpc {
 
             SubscriptionType::Revoke_Sub { user, subs } => {
                 self.active_subscriptions.remove(subs);
-                self.number_of_subsciptions -= 1;
+                *self.number_of_subsciptions.lock().await -= 1;
                 if let Some(user_subs) = self.subscriptions.get(user) {
                     user_subs.retain(|(s, _)| s != subs);
                 }
@@ -269,10 +270,8 @@ impl chainRpc {
                         sub_id: subid,
                         log: event,
                     };
-                    self.log_sender.send(rpcevent).await?;
+                    self.event_sender.lock().await.send(rpcevent).await;
                 }
-
-                SubscriptionType::Revoke_User { user } => {}
             },
             None => return Err(Box::new(RpcTypeError::NoSubscriptionFound)),
         }
@@ -280,20 +279,21 @@ impl chainRpc {
     }
 }
 
+#[derive(Clone)]
 pub struct RPChandler {
     pub available_chains: Vec<usize>,
     pub chain_state: DashMap<usize, ChainState>,
 }
 
 impl RPChandler {
-    fn new() -> Self {
+    pub fn new(chains: Vec<usize>) -> Self {
         RPChandler {
-            available_chains: Vec::new(),
+            available_chains: chains,
             chain_state: Default::default(),
         }
     }
 
-    fn new_chainstate(&mut self, chainid: usize, url: String) -> ChainState {
+    pub fn new_chainstate(&mut self, chainid: usize, url: String) -> ChainState {
         let chain = ChainState {
             active: false,
             chain_url: url,
@@ -302,14 +302,13 @@ impl RPChandler {
         self.chain_state.insert(chainid, chain);
     }
 
-    async fn build(
+    pub async fn build(
         &mut self,
         chainid: Vec<usize>,
         subscription: Vec<SubscriptionType>,
         log_sender: mpsc::Sender<RpcTypes>,
     ) -> Result<(), Box<dyn Error>> {
         let ziper = chainid.iter().zip(subscription.iter());
-
         for (chainid, sub) in ziper {
             self.new_conn(chainid, sub, log_sender.clone()).await
         }
