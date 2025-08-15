@@ -59,7 +59,7 @@ impl RawTransaction {
     pub fn new(
         chain_id: usize,
         contract_address: String,
-        abi: Strnig,
+        abi: String,
         function_name: String,
         params: Vec<(usize, String)>,
     ) -> Self {

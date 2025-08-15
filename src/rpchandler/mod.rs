@@ -57,8 +57,8 @@ pub struct chainRpc {
     subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
     active_subscriptions: DashMap<String, SubscriptionType>,
     event_sender: mpsc::Sender<Log>,
-    provider: Mutex<providerType>,
-    number_of_subsciptions: usize,
+    provider: Arc<Mutex<providerType>>,
+    number_of_subsciptions: Arc<Mutex<usize>>,
 }
 
 impl chainRpc {
@@ -66,8 +66,8 @@ impl chainRpc {
         chainid: usize,
         URL: String,
         subscription: SubscriptionType,
-        command_receiver: mpsc::Receiver<(SubscriptionType, oneshot::Sender<RpcTypes>)>,
-        log_sender: mpsc::Sender<RpcTypes>,
+        mut command_receiver: mpsc::Receiver<(SubscriptionType, oneshot::Sender<RpcTypes>)>,
+        log_sender: mpsc::Sender<Log>,
     ) -> Result<(), Box<dyn Error>> {
         // Connecting the RPC node with web sockets
 
@@ -93,8 +93,8 @@ impl chainRpc {
             subscriptions: Default::default(),
             active_subscriptions: Default::default(),
             event_sender: log_sender,
-            provider: provider,
-            number_of_subsciptions: 1,
+            provider: Arc::new(Mutex::new(provider)),
+            number_of_subsciptions: Arc::new(Mutex::new(1)),
         };
 
         chainrpc
@@ -119,9 +119,8 @@ impl chainRpc {
                         if let Err(e) = rpc_cloned.handlecmd(cmd ,res_receiver, &mut stream_map).await{
                             let res = RpcTypes::Response{
                                 success : false,
-                                message : "Error while handling the command",
+                                message : "Error while handling the command".to_string(),
                             };
-                            res_receiver.send(res).await;
                             eprint!("cmd error :{e}");
                         }
                     }
@@ -134,6 +133,7 @@ impl chainRpc {
                 }
             }
         });
+        Ok(())
     }
 
     fn getFilter(subscription: &SubscriptionType) -> (Address, Filter) {
@@ -154,7 +154,7 @@ impl chainRpc {
     }
 
     async fn handlecmd(
-        &mut self,
+        &self,
         cmd: SubscriptionType,
         res_receiver: oneshot::Sender<RpcTypes>,
         stream_map: &mut StreamMap<String, SubscriptionStream<Log>>,
@@ -173,28 +173,29 @@ impl chainRpc {
                     Err(e) => {
                         let res = RpcTypes::Response {
                             success: false,
-                            message: "error while subscription",
+                            message: "error while subscription".to_string(),
                         };
-                        res_receiver.send(res).await;
+                        res_receiver.send(res);
                         return Err(Box::new(RpcTypeError::SubscriptionError));
                     }
                 };
+
                 *self.number_of_subsciptions.lock().await += 1;
 
                 let subid = sub.local_id().to_string();
 
                 self.active_subscriptions.insert(subid.clone(), cmd.clone());
 
-                if let Some(subs) = self.subscriptions.get_mut(user.clone()) {
+                if let Some(mut subs) = self.subscriptions.get_mut(&user) {
                     subs.push((subid.clone(), cmd.clone()));
                 } else {
                     self.subscriptions
-                        .insert(user.clone(), vec![(subid.clone(), cmd.clone())])
+                        .insert(user.clone(), vec![(subid.clone(), cmd.clone())]);
                 }
 
                 let res = RpcTypes::Response {
                     success: true,
-                    message: subid,
+                    message: subid.clone(),
                 };
                 res_receiver.send(res);
                 stream_map.insert(subid, sub.into_stream());
@@ -206,59 +207,61 @@ impl chainRpc {
                 tx,
                 db,
             } => {
-                let provider = self.provider.lock().await;
+                let mut provider = self.provider.lock().await;
                 let wallet = provider.wallet_mut();
                 if let None = wallet.signer_by_address(signer.address()) {
                     wallet.register_signer(signer);
                 }
-                let res = provider.send_transaction(tx);
+                let provider_dup = provider.clone();
+                // let res = provider.send_transaction(tx);
                 tokio::spawn(async move {
-                    if let Ok(tx_reciept) = res.await {
-                        let tx_hash = tx_reciept.tx_hash();
+                    if let Ok(tx_reciept) = provider_dup.send_transaction(tx).await {
                         if let Ok(receipt) = tx_reciept.get_receipt().await {
-                            let str = match serde_json::to_string(receipt) {
+                            let tx_hash = receipt.transaction_hash;
+                            let str = match serde_json::to_string(&receipt) {
                                 Ok(t) => t,
-                                Err(e) => {}
+                                Err(e) => {
+                                    return Err(e);
+                                }
                             };
-                            if let Some(t) = db.lock().await.get_mut(user) {
+                            if let Some(mut t) = db.get_mut(&user) {
+                                let update = UserUpdates {
+                                    Message: str.clone(),
+                                    tx: tx_hash.to_string(),
+                                };
                                 let update = UserUpdates {
                                     Message: str,
                                     tx: tx_hash.to_string(),
                                 };
-                                t.insert(time::Instant, value)
+                                t.insert(time::Instant::now(), update);
                             }
                         }
                     }
-                })
+                    Ok(())
+                });
             }
 
             SubscriptionType::Revoke_Sub { user, subs } => {
-                self.active_subscriptions.remove(subs);
+                self.active_subscriptions.remove(&subs);
                 *self.number_of_subsciptions.lock().await -= 1;
-                if let Some(user_subs) = self.subscriptions.get(user) {
-                    user_subs.retain(|(s, _)| s != subs);
+                if let Some(mut user_subs) = self.subscriptions.get_mut(&user) {
+                    user_subs.retain(|(s, _)| *s != subs);
                 }
-                stream_map.remove(subs);
+                stream_map.remove(&subs);
                 res_receiver.send(RpcTypes::Response {
                     success: true,
-                    message: "removed the subscription",
-                })
+                    message: "removed the subscription".to_string(),
+                });
             }
         }
-
-        let res = RpcTypes::Response {
-            success: bool,
-            message: "Command success",
-        };
-        res_receiver.send(res).await?;
 
         Ok(())
     }
 
-    async fn handleevent(&mut self, event: Log, subid: String) -> Result<(), Box<dyn Error>> {
+    async fn handleevent(&self, event: Log, subid: String) -> Result<(), Box<dyn Error>> {
         let subscription = self.active_subscriptions.get(&subid);
         match subscription {
-            Some(sub) => match sub {
+            Some(sub) => match *sub {
                 SubscriptionType::Subscription {
                     user,
                     chainid,
@@ -270,8 +273,9 @@ impl chainRpc {
                         sub_id: subid,
                         log: event,
                     };
-                    self.event_sender.lock().await.send(rpcevent).await;
+                    self.event_sender.send(rpcevent).await;
                 }
+                _ => return Ok(()),
             },
             None => return Err(Box::new(RpcTypeError::NoSubscriptionFound)),
         }
@@ -299,7 +303,8 @@ impl RPChandler {
             chain_url: url,
             channel: None,
         };
-        self.chain_state.insert(chainid, chain);
+        self.chain_state.insert(chainid, chain.clone());
+        chain
     }
 
     pub async fn build(
@@ -310,8 +315,10 @@ impl RPChandler {
     ) -> Result<(), Box<dyn Error>> {
         let ziper = chainid.iter().zip(subscription.iter());
         for (chainid, sub) in ziper {
-            self.new_conn(chainid, sub, log_sender.clone()).await
+            self.new_conn(chainid.clone(), sub.clone(), log_sender.clone())
+                .await?;
         }
+        Ok(())
     }
 
     async fn new_conn(
@@ -334,9 +341,9 @@ impl RPChandler {
                 )
                 .await?;
 
-                chainState.channel = Some(command_sender);
+                chainState.channel = Some(command_receiver);
 
-                return Ok(rpc_receiver);
+                return Ok(());
             }
             None => Err(Box::new(RpcTypeError::ChainNotSupported)),
         }

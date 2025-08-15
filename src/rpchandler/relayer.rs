@@ -23,6 +23,7 @@ pub struct UserInfo {
     pub subs: Vec<String>,
 }
 
+#[derive(Clone, Debug)]
 pub struct UserUpdates {
     pub Message: String,
     pub tx: String,
@@ -30,16 +31,16 @@ pub struct UserUpdates {
 
 pub struct RelayerHandler {
     RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
-    log_receiver: Mutex<mpsc::Receiver<Log>>,
-    command_receiver: Mutex<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
+    log_receiver: Arc<mpsc::Receiver<Log>>,
+    command_receiver: Arc<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
-    user_logs: DashMap<Address, BTreeMap<time::Instant, UserUpdates>>,
+    user_logs: Arc<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>,
 }
 
 impl RelayerHandler {
     pub fn new_handler(
-        log_receiver: mpsc::Receiver<RpcTypes::UserLog>,
+        log_receiver: mpsc::Receiver<RpcTypes>,
         command_receiver: mpsc::Receiver<RelayerCommand>,
     ) -> Self {
         RelayerHandler {
@@ -68,50 +69,63 @@ impl RelayerHandler {
         Ok(signer.address())
     }
 
-    pub async fn register(
-        &mut self,
-        user: Address,
-    ) -> Result<Address, Box<dyn Error + Send + Sync>> {
-        self.new_relayer(address)
+    pub async fn register(&mut self, user: String) -> Result<Address, Box<dyn Error>> {
+        self.new_relayer(user)
     }
 
-    pub async fn run(&mut self) -> Result<(), Box<dyn Error + send + sync>> {
+    pub async fn run(self) -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some((command , res_receiver)) = command_receiver.recv() => {
+                    Some((command , res_receiver)) = self.command_receiver.recv() => {
                         self.handle_command(command,res_receiver).await;
                     }
-                    log = log_receiver.recv() => {
-                        self.handle_log(log).await
+                    log = self.log_receiver.recv() => {
+                        self.handle_log(log).await?;
 
                     }
                 }
             }
-        })
+        });
+        Ok(())
     }
 
     async fn handle_command(
         &mut self,
         command: RelayerCommand,
-        res_receiver: oneshot::Sender<RpcTypes::Response>,
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        res_receiver: oneshot::Sender<RpcTypes>,
+    ) -> Result<(), Box<dyn Error>> {
         match command {
-            RelayerCommand::Register { user } => self.register(user),
-            RelayerCommand::GetLogs { user, time } => {
-                let addr: Address;
-                if let Some(addr_) = Address::from_str(user) {
-                    addr = addr_;
-                }
-                let logs = self.user_logs.lock().await;
-                if let Some(map) = logs.get(addr) {
-                    let res_logs = Vec::new();
-                    for (i, logs) in map.range(time..) {
-                        res_logs.push(logs.clone());
+            RelayerCommand::Register { user } => {
+                let addr = match self.new_relayer(user) {
+                    Ok(addr) => addr,
+                    Err(e) => {
+                        res_receiver.send(RpcTypes::Response {
+                            success: false,
+                            message: e.to_string(),
+                        });
+                        return Ok(());
                     }
-                    res_receiver.send(RpcTypes::Logs { logs: res_logs }).await
+                };
+                res_receiver.send(RpcTypes::Response {
+                    success: true,
+                    message: addr.to_string(),
+                });
+            }
+
+            RelayerCommand::GetLogs { user, time } => {
+                if let Ok(addr) = Address::from_str(user.as_str()) {
+                    let logs = self.user_logs.clone();
+                    if let Some(map) = logs.get(&addr) {
+                        let mut res_logs = Vec::new();
+                        for (i, logs) in map.range(time..) {
+                            res_logs.push(logs.clone());
+                        }
+                        res_receiver.send(RpcTypes::Logs { logs: res_logs });
+                    }
                 }
             }
+
             RelayerCommand::DefineRelayerAction {
                 user,
                 sub_id,
@@ -122,61 +136,57 @@ impl RelayerHandler {
                 Params,
             } => {
                 let raw_tran =
-                    RawTransaction::new(chainid, target_address, ABI, function_name, params);
-                if let Some(addr) = Address::from_str(user) {
-                    self.actions.insert(sub_id, raw_tran);
-                    if let Some(userinfo) = self.relayers.get_mut(addr) {
+                    RawTransaction::new(chainid, target_address, ABI, function_name, Params);
+                if let Ok(addr) = Address::from_str(user.as_str()) {
+                    self.actions.insert(sub_id.clone(), raw_tran);
+                    if let Some(mut userinfo) = self.relayers.get_mut(&addr) {
                         userinfo.subs.push(sub_id);
                     }
-                    res_receiver
-                        .send(RpcTypes::Response {
-                            success: true,
-                            message: "SuccessFully added",
-                        })
-                        .await;
+                    res_receiver.send(RpcTypes::Response {
+                        success: true,
+                        message: "SuccessFully added".to_string(),
+                    });
                 }
             }
             RelayerCommand::Revoke_Subscription { user, sub_id } => {
-                if let Some(addr) = Address::from_str(user) {
-                    if let Some(userinfo) = self.relayers.get_mut(addr) {
-                        if let Some(tran) = self.actions.get(sub_id) {
+                if let Ok(addr) = Address::from_str(user.as_str()) {
+                    if let Some(mut userinfo) = self.relayers.get_mut(&addr) {
+                        if let Some(tran) = self.actions.get(&sub_id) {
                             let send = SubscriptionType::Revoke_Sub {
                                 user: addr,
-                                subs: sub_id,
+                                subs: sub_id.clone(),
                             };
-                            self.actions.remove(sub_id);
-                            userinfo.subs.retain(|s| s != sub_id);
+                            self.actions.remove(&sub_id);
+                            userinfo.subs.retain(|s| s != &sub_id);
                             let chainid = tran.chain_id;
                             if let Some(ch) = self.RpcCommand_sender.get_mut(&chainid) {
-                                ch.send(send).await;
+                                ch.send(send).await?;
                             }
-
                             res_receiver.send(RpcTypes::Response {
                                 success: true,
-                                message: "Revoked the Subscription",
-                            })
+                                message: "Revoked the Subscription".to_string(),
+                            });
                         }
                     }
                 }
             }
 
             RelayerCommand::Get_RalyerInfo { user } => {
-                if let Some(addr) = Address::from_str(user) {
-                    if let Some(info) = self.relayers.get(addr) {
+                if let Some(addr) = Address::from_str(user.as_str()).ok() {
+                    if let Some(info) = self.relayers.get(&addr) {
                         let signer = info.signer.address();
-                        res_receiver
-                            .send(RpcTypes::Response {
-                                success: true,
-                                message: signer.to_string(),
-                            })
-                            .await
+                        res_receiver.send(RpcTypes::Response {
+                            success: true,
+                            message: signer.to_string(),
+                        });
                     }
                 }
             }
         }
+        Ok(())
     }
 
-    async fn handle_log(&mut self, log: RpcTypes) -> Result<(), Box<dyn Error + Send + Sync>> {
+    async fn handle_log(&mut self, log: RpcTypes) -> Result<(), Box<dyn Error>> {
         let addr;
         let subid;
         let Userlog;
@@ -189,22 +199,22 @@ impl RelayerHandler {
             _ => {}
         }
         let transaction: RawTransaction;
-        if let Some(raw_tran) = self.actions.get(sub_id) {
+        if let Some(raw_tran) = self.actions.get(&subid) {
             transaction = raw_tran.clone();
         }
 
         if let Some(wallet) = self.relayers.get_mut(&addr) {
             if let Ok(tran) = transaction.build_transaction(log) {
-                let s = wallet.clone();
-                let db = &self.user_logs;
+                let s = wallet.signer.clone();
+                let db = self.user_logs;
                 tran.with_from(s.address())
-                    .with_chain_id(transaction.chain_id);
+                    .with_chain_id(transaction.chain_id as u64);
 
                 let res = SubscriptionType::Transaction {
                     user: addr.clone(),
                     signer: s,
                     tx: tran,
-                    db: db,
+                    db: db.clone(),
                 };
 
                 if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
@@ -228,11 +238,11 @@ pub enum RelayerCommand {
     DefineRelayerAction {
         user: String,
         sub_id: String,
-        chainid: int,
+        chainid: usize,
         target_address: String,
         ABI: String,
         function_name: String,
-        Params: Vec<String>,
+        Params: Vec<(usize, String)>,
     },
     Revoke_Subscription {
         user: String,

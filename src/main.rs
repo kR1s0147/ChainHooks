@@ -6,7 +6,6 @@ use std::env;
 use std::error::Error;
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use alloy::dyn_abi::ErrorExt;
 use alloy::primitives::{Address, Signature};
@@ -16,7 +15,7 @@ use dashmap::DashMap;
 use rand::TryRngCore;
 
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::time::{self, Instant};
+use tokio::time::{self, Duration, Instant};
 use tonic::{Request, Response, Status, transport::Server};
 mod rpchandler;
 use rpchandler::*;
@@ -29,11 +28,10 @@ use chainhooks::*;
 
 use dotenv::dotenv;
 
-#[derive(Default)]
 pub struct RelayerService {
-    user_nonce: Arc<DashMap<Address, UserNonce>>,
-    RelayerCommand_sender: Arc<mpsc::Sender<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
-    RpcHandler: Arc<Mutex<RPChandler>>,
+    user_nonce: DashMap<Address, UserNonce>,
+    RelayerCommand_sender: mpsc::Sender<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
+    RpcHandler: Mutex<RPChandler>,
 }
 
 struct UserNonce {
@@ -53,27 +51,27 @@ struct UserNonce {
 impl ChainHooks for RelayerService {
     // return nonce
     async fn get_nonce(
-        &mut self,
+        &self,
         userRequest: Request<GetNonceRequest>,
     ) -> Result<Response<GetNonceResponse>, Status> {
         let req = userRequest.into_inner();
         let user = req.address;
-        let user_addr = Address::from_str(user);
+        let user_addr = Address::from_str(&user).unwrap();
         let mut random_bytes = [0u8; 16];
         rand::rngs::OsRng.try_fill_bytes(&mut random_bytes);
-
+        let n = hex::encode(random_bytes);
         let nonce = UserNonce {
-            nonce: hex::encode(random_bytes),
+            nonce: n.clone(),
             time: Instant::now(),
         };
 
-        let users_nonce = self.user_nonce.lock().await;
+        let users_nonce = &self.user_nonce;
         users_nonce.insert(user_addr, nonce);
 
-        Ok(Response::new(GetNonceResponse { nonce }))
+        Ok(Response::new(GetNonceResponse { nonce: n }))
     }
     async fn register(
-        &mut self,
+        &self,
         userRequest: Request<UserAuthRequest>,
     ) -> Result<Response<UserRegistrationResponse>, Status> {
         let req = userRequest.into_inner();
@@ -90,7 +88,7 @@ impl ChainHooks for RelayerService {
             }
         };
         let usertx = UserTx::new(req.address, req.signature);
-        if let Some(n) = self.user_nonce.get(&addr) {
+        if let Some(n) = self.user_nonce.get(&user_addr) {
             if !usertx.VerifyUser(n.nonce) {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
@@ -100,7 +98,7 @@ impl ChainHooks for RelayerService {
     }
 
     async fn get_relayer(
-        &mut self,
+        &self,
         userRequest: Request<UserAuthRequest>,
     ) -> Result<Response<RelayerInfo>, Status> {
         // Relayer Info (pun key)
@@ -109,6 +107,7 @@ impl ChainHooks for RelayerService {
         let req = userRequest.into_inner();
         let user = req.address;
         let addr = Address::from_str(&user).unwrap();
+        let usertx = UserTx::new(user, req.signature);
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx.VerifyUser(n.nonce) {
                 return Err(Status::permission_denied("Not Authenticated"));
@@ -136,9 +135,11 @@ impl ChainHooks for RelayerService {
         &self,
         userRequest: Request<GetUserLogsRequest>,
     ) -> Result<Response<UserLogs>, Status> {
-        let user = userRequest.into_inner().address;
+        let req = userRequest.into_inner();
+        let user = req.address;
         let time = userRequest.into_inner().start_time.unwrap();
         let addr = Address::from_str(&user).unwrap();
+        let usertx = UserTx::new(user, req.signature);
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx.VerifyUser(n.nonce) {
                 return Err(Status::permission_denied("Not Authenticated"));
@@ -164,11 +165,12 @@ impl ChainHooks for RelayerService {
         Err(Status::not_found("Logs not Found"))
     }
     async fn subscribe(
-        &mut self,
+        &self,
         userRequest: Request<SubscriptionRequest>,
     ) -> Result<Response<SubscriptionResponse>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
+        let usertx = UserTx::new(user, req.signature);
         if let Some(n) = self.user_nonce.get(&user) {
             if !usertx.VerifyUser(n.nonce) {
                 return Err(Status::permission_denied("Not Authenticated"));
@@ -186,6 +188,7 @@ impl ChainHooks for RelayerService {
 
         let ch = self
             .RpcHandler
+            .lock()
             .chain_state
             .get(sub.chain_id)
             .unwrap()
@@ -201,7 +204,7 @@ impl ChainHooks for RelayerService {
                 if success {
                     let action = req.action.unwrap();
                     let relayer_command = RelayerCommand::DefineRelayerAction {
-                        user,
+                        user: user.to_string(),
                         sub_id: message,
                         chainid: action.chain_id,
                         target_address: action.target_address,
@@ -233,13 +236,18 @@ impl ChainHooks for RelayerService {
         Err(Status::internal("error while subcription"))
     }
     async fn un_subscribe(
-        &mut self,
+        &self,
         userRequest: Request<UnsubscribeRequest>,
-    ) -> Result<Response<bool>, Status> {
+    ) -> Result<Response<()>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
+        let usertx = UserTx::new(user.to_string(), req.signature);
         if let Some(n) = self.user_nonce.get(&user) {
-            if !usertx.VerifyUser(n.nonce) {
+            if !usertx
+                .VerifyUser(n.nonce)
+                .await
+                .expect("User verification failed")
+            {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
@@ -251,11 +259,11 @@ impl ChainHooks for RelayerService {
         let (tx, rx) = oneshot::channel::<RpcTypes>();
 
         self.RelayerCommand_sender.send((relayer_command, tx)).await;
-        let res = rx.await?;
+        let res = rx.await.expect("Failed to receive response");
         match res {
             RpcTypes::Response { success, message } => {
                 if success {
-                    return Ok(Response::new(true));
+                    return Ok(Response::new(()));
                 }
             }
             _ => {}
