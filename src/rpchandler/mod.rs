@@ -56,7 +56,7 @@ pub struct chainRpc {
     chainid: usize,
     subscriptions: DashMap<Address, Vec<(String, SubscriptionType)>>,
     active_subscriptions: DashMap<String, SubscriptionType>,
-    event_sender: mpsc::Sender<Log>,
+    event_sender: mpsc::Sender<RpcTypes>,
     provider: Arc<Mutex<providerType>>,
     number_of_subsciptions: Arc<Mutex<usize>>,
 }
@@ -67,7 +67,7 @@ impl chainRpc {
         URL: String,
         subscription: SubscriptionType,
         mut command_receiver: mpsc::Receiver<(SubscriptionType, oneshot::Sender<RpcTypes>)>,
-        log_sender: mpsc::Sender<Log>,
+        log_sender: mpsc::Sender<RpcTypes>,
     ) -> Result<(), Box<dyn Error>> {
         // Connecting the RPC node with web sockets
 
@@ -80,7 +80,7 @@ impl chainRpc {
             .connect_ws(ws)
             .await?;
 
-        let (user, filter) = Self::getFilter(&subscription);
+        let (user, filter) = Self::getFilter(&subscription).unwrap();
         let sub = match provider.subscribe_logs(&filter).await {
             Ok(sub) => sub,
             Err(e) => return Err(Box::new(RpcTypeError::SubscriptionError)),
@@ -136,7 +136,7 @@ impl chainRpc {
         Ok(())
     }
 
-    fn getFilter(subscription: &SubscriptionType) -> (Address, Filter) {
+    fn getFilter(subscription: &SubscriptionType) -> Option<(Address, Filter)> {
         match subscription {
             SubscriptionType::Subscription {
                 user,
@@ -147,9 +147,9 @@ impl chainRpc {
                 let filter = Filter::new()
                     .address(address.clone())
                     .events(event_signature);
-                (user.clone(), filter)
+                Some((user.clone(), filter))
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -166,7 +166,7 @@ impl chainRpc {
                 address,
                 event_signature,
             } => {
-                let (user, filter) = Self::getFilter(&cmd);
+                let (user, filter) = Self::getFilter(&cmd).unwrap();
 
                 let sub = match self.provider.lock().await.subscribe_logs(&filter).await {
                     Ok(sub) => sub,
@@ -261,7 +261,7 @@ impl chainRpc {
     async fn handleevent(&self, event: Log, subid: String) -> Result<(), Box<dyn Error>> {
         let subscription = self.active_subscriptions.get(&subid);
         match subscription {
-            Some(sub) => match *sub {
+            Some(sub) => match sub.clone() {
                 SubscriptionType::Subscription {
                     user,
                     chainid,
@@ -329,9 +329,10 @@ impl RPChandler {
     ) -> Result<(), Box<dyn Error>> {
         let chain_state = self.chain_state.get_mut(&chainid);
         match chain_state {
-            Some(chainState) => {
+            Some(mut chainState) => {
                 chainState.active = true;
-                let (command_receiver, command_sender) = mpsc::channel::<SubscriptionType>(100);
+                let (command_sender, command_receiver) =
+                    mpsc::channel::<(SubscriptionType, oneshot::Sender<RpcTypes>)>(100);
                 chainRpc::new(
                     chainid,
                     chainState.chain_url.clone(),
@@ -341,7 +342,7 @@ impl RPChandler {
                 )
                 .await?;
 
-                chainState.channel = Some(command_receiver);
+                chainState.channel = Some(command_sender);
 
                 return Ok(());
             }

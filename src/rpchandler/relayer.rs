@@ -30,23 +30,22 @@ pub struct UserUpdates {
 }
 
 pub struct RelayerHandler {
-    RpcCommand_sender: DashMap<usize, mpsc::Sender<SubscriptionType>>,
-    log_receiver: Arc<mpsc::Receiver<Log>>,
-    command_receiver: Arc<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>,
+    RpcCommand_sender: DashMap<usize, mpsc::Sender<(SubscriptionType, oneshot::Sender<RpcTypes>)>>,
+    // log_receiver: Arc<Mutex<mpsc::Receiver<RpcTypes>>>,
+    // command_receiver: Arc<Mutex<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>>,
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
     user_logs: Arc<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>,
 }
 
 impl RelayerHandler {
-    pub fn new_handler(
-        log_receiver: mpsc::Receiver<RpcTypes>,
-        command_receiver: mpsc::Receiver<RelayerCommand>,
+    pub fn new_handler(// mut log_receiver: mpsc::Receiver<RpcTypes>,
+        // mut command_receiver: mpsc::Receiver<RelayerCommand>,
     ) -> Self {
         RelayerHandler {
             RpcCommand_sender: Default::default(),
-            log_receiver,
-            command_receiver,
+            // log_receiver: Arc::new(Mutex::new(log_receiver)),
+            // command_receiver: Arc::new(Mutex::new(command_receiver)),
             relayers: Default::default(),
             actions: Default::default(),
             user_logs: Default::default(),
@@ -73,15 +72,24 @@ impl RelayerHandler {
         self.new_relayer(user)
     }
 
-    pub async fn run(self) -> Result<(), Box<dyn Error>> {
+    pub async fn run(
+        mut self,
+        mut log_receiver: mpsc::Receiver<RpcTypes>,
+        mut command_receiver: mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
+    ) -> Result<(), Box<dyn Error>> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    Some((command , res_receiver)) = self.command_receiver.recv() => {
+                    Some((command , res_receiver)) = command_receiver.recv() => {
                         self.handle_command(command,res_receiver).await;
                     }
-                    log = self.log_receiver.recv() => {
-                        self.handle_log(log).await?;
+                    log = log_receiver.recv() => {
+                        if let Some(log) = log {
+                            if let Err(e) = self.handle_log(log).await {
+                                eprintln!("Error handling log: {}", e);
+                            }
+                        }
+
 
                     }
                 }
@@ -159,13 +167,16 @@ impl RelayerHandler {
                             self.actions.remove(&sub_id);
                             userinfo.subs.retain(|s| s != &sub_id);
                             let chainid = tran.chain_id;
-                            if let Some(ch) = self.RpcCommand_sender.get_mut(&chainid) {
-                                ch.send(send).await?;
-                            }
-                            res_receiver.send(RpcTypes::Response {
+                            let mut res: RpcTypes = RpcTypes::Response {
                                 success: true,
-                                message: "Revoked the Subscription".to_string(),
-                            });
+                                message: "Subscription revoked".to_string(),
+                            };
+                            if let Some(ch) = self.RpcCommand_sender.get_mut(&chainid) {
+                                let (ress, rc) = oneshot::channel::<RpcTypes>();
+                                ch.send((send, ress)).await?;
+                                res = rc.await.unwrap();
+                            }
+                            res_receiver.send(res);
                         }
                     }
                 }
@@ -187,9 +198,9 @@ impl RelayerHandler {
     }
 
     async fn handle_log(&mut self, log: RpcTypes) -> Result<(), Box<dyn Error>> {
-        let addr;
-        let subid;
-        let Userlog;
+        let mut addr = Address::default();
+        let mut subid = String::new();
+        let mut Userlog = Log::default();
         match log {
             RpcTypes::UserLog { user, sub_id, log } => {
                 addr = user;
@@ -198,16 +209,17 @@ impl RelayerHandler {
             }
             _ => {}
         }
-        let transaction: RawTransaction;
+        let mut transaction: RawTransaction = RawTransaction::default();
         if let Some(raw_tran) = self.actions.get(&subid) {
             transaction = raw_tran.clone();
         }
 
         if let Some(wallet) = self.relayers.get_mut(&addr) {
-            if let Ok(tran) = transaction.build_transaction(log) {
+            if let Ok(mut tran) = transaction.clone().build_transaction(Userlog) {
                 let s = wallet.signer.clone();
-                let db = self.user_logs;
-                tran.with_from(s.address())
+                let db = self.user_logs.clone();
+                tran = tran
+                    .with_from(s.address())
                     .with_chain_id(transaction.chain_id as u64);
 
                 let res = SubscriptionType::Transaction {
@@ -218,8 +230,8 @@ impl RelayerHandler {
                 };
 
                 if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
-                    let (_, sender) = oneshot::channel::<RpcTypes>();
-                    ch.send((res, sender)).await
+                    let (sender, _rec) = oneshot::channel::<RpcTypes>();
+                    ch.send((res, sender)).await;
                 }
             }
         }

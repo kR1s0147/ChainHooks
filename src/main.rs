@@ -84,16 +84,22 @@ impl ChainHooks for RelayerService {
                     message: String::from("Invalid Address"),
                     user_id: String::from("NA"),
                 };
-                return Response::new(res);
+                return Ok(Response::new(res));
             }
         };
         let usertx = UserTx::new(req.address, req.signature);
         if let Some(n) = self.user_nonce.get(&user_addr) {
-            if !usertx.VerifyUser(n.nonce) {
+            if !usertx
+                .VerifyUser(n.nonce)
+                .await
+                .expect("User verification failed")
+            {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
-        let relayer_cmd = RelayerCommand::Register { user: user_addr };
+        let relayer_cmd = RelayerCommand::Register {
+            user: user_addr.to_string(),
+        };
         let res = self.RelayerCommand_sender.send(relayer_cmd);
     }
 
@@ -109,7 +115,11 @@ impl ChainHooks for RelayerService {
         let addr = Address::from_str(&user).unwrap();
         let usertx = UserTx::new(user, req.signature);
         if let Some(n) = self.user_nonce.get(&addr) {
-            if !usertx.VerifyUser(n.nonce) {
+            if !usertx
+                .VerifyUser(n.nonce)
+                .await
+                .expect("User verification failed")
+            {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
@@ -117,14 +127,14 @@ impl ChainHooks for RelayerService {
         let req = RelayerCommand::Get_RalyerInfo { user };
         let (rx, tx) = oneshot::channel::<RpcTypes>();
         self.RelayerCommand_sender.send((req, rx));
-        let res = tx.await?;
+        let res = tx.await.unwrap();
         match res {
             RpcTypes::Response { success, message } => {
                 if success {
-                    return Response::new(RelayerInfo {
+                    return Ok(Response::new(RelayerInfo {
                         owner_address: user,
                         relayer_public_key: message,
-                    });
+                    }));
                 }
             }
             _ => {}
@@ -141,13 +151,18 @@ impl ChainHooks for RelayerService {
         let addr = Address::from_str(&user).unwrap();
         let usertx = UserTx::new(user, req.signature);
         if let Some(n) = self.user_nonce.get(&addr) {
-            if !usertx.VerifyUser(n.nonce) {
+            if !usertx
+                .VerifyUser(n.nonce)
+                .await
+                .expect("User verification failed")
+            {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
         let req = RelayerCommand::GetLogs {
             user,
-            time: time::Instant::checked_add(&self, Duration::from_secs(time.seconds)).unwrap(),
+            time: time::Instant::checked_add(&self, Duration::from_secs(time.seconds as u64))
+                .unwrap(),
         };
 
         let (tx, rx) = oneshot::channel::<RpcTypes>();
@@ -157,7 +172,7 @@ impl ChainHooks for RelayerService {
             RpcTypes::Logs { logs } => {
                 return Ok(Response::new(UserLogs {
                     address: user,
-                    logs: logs.to_string(),
+                    logs: format!("{:?}", logs),
                 }));
             }
             _ => {}
@@ -170,16 +185,20 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<SubscriptionResponse>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
-        let usertx = UserTx::new(user, req.signature);
+        let usertx = UserTx::new(user.to_string(), req.signature);
         if let Some(n) = self.user_nonce.get(&user) {
-            if !usertx.VerifyUser(n.nonce) {
+            if !usertx
+                .VerifyUser(n.nonce)
+                .await
+                .expect("User verification failed")
+            {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
         let sub = req.details.unwrap();
         let rpc_command = SubscriptionType::Subscription {
             user,
-            chainid: sub.chain_id,
+            chainid: sub.chain_id as usize,
             address: sub.target_address,
             event_signature: sub.event_signature,
         };
@@ -190,7 +209,7 @@ impl ChainHooks for RelayerService {
             .RpcHandler
             .lock()
             .chain_state
-            .get(sub.chain_id)
+            .get(sub.chain_id as usize)
             .unwrap()
             .channel
             .unwrap();
@@ -206,7 +225,7 @@ impl ChainHooks for RelayerService {
                     let relayer_command = RelayerCommand::DefineRelayerAction {
                         user: user.to_string(),
                         sub_id: message,
-                        chainid: action.chain_id,
+                        chainid: action.chain_id as usize,
                         target_address: action.target_address,
                         ABI: action.abi,
                         function_name: action.function_name,
@@ -262,11 +281,11 @@ impl ChainHooks for RelayerService {
         let res = rx.await.expect("Failed to receive response");
         match res {
             RpcTypes::Response { success, message } => {
-                if success {
-                    return Ok(Response::new(()));
-                }
+                return Ok(Response::new(()));
             }
-            _ => {}
+            _ => {
+                return Ok(Response::new(()));
+            }
         }
     }
 }

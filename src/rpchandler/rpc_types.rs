@@ -10,7 +10,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::time;
 
 #[derive(Debug, Clone)]
@@ -67,5 +67,5 @@ pub enum RpcTypeError {
 pub struct ChainState {
     pub active: bool,
     pub chain_url: String,
-    pub channel: Option<mpsc::Sender<SubscriptionType>>,
+    pub channel: Option<mpsc::Sender<(SubscriptionType, oneshot::Sender<RpcTypes>)>>,
 }
