@@ -4,6 +4,7 @@ use crate::rpchandler::rpc_types::{RpcTypes, SubscriptionType};
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
+use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -87,10 +88,10 @@ impl ChainHooks for RelayerService {
                 return Ok(Response::new(res));
             }
         };
-        let usertx = UserTx::new(req.address, req.signature);
+        let usertx = UserTx::new(req.address, req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user_addr) {
             if !usertx
-                .VerifyUser(n.nonce)
+                .VerifyUser(n.nonce.clone())
                 .await
                 .expect("User verification failed")
             {
@@ -100,7 +101,17 @@ impl ChainHooks for RelayerService {
         let relayer_cmd = RelayerCommand::Register {
             user: user_addr.to_string(),
         };
-        let res = self.RelayerCommand_sender.send(relayer_cmd);
+        let (tx, _rx) = oneshot::channel::<RpcTypes>();
+        let res = self.RelayerCommand_sender.send((relayer_cmd, tx)).await;
+        Ok(Response::new(UserRegistrationResponse {
+            success: res.is_ok(),
+            message: if res.is_ok() {
+                String::from("User Registered Successfully")
+            } else {
+                String::from("Failed to Register User")
+            },
+            user_id: user_addr.to_string(),
+        }))
     }
 
     async fn get_relayer(
@@ -113,10 +124,10 @@ impl ChainHooks for RelayerService {
         let req = userRequest.into_inner();
         let user = req.address;
         let addr = Address::from_str(&user).unwrap();
-        let usertx = UserTx::new(user, req.signature);
+        let usertx = UserTx::new(user.clone(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx
-                .VerifyUser(n.nonce)
+                .VerifyUser(n.nonce.clone())
                 .await
                 .expect("User verification failed")
             {
@@ -124,7 +135,7 @@ impl ChainHooks for RelayerService {
             }
         }
 
-        let req = RelayerCommand::Get_RalyerInfo { user };
+        let req = RelayerCommand::Get_RalyerInfo { user: user.clone() };
         let (rx, tx) = oneshot::channel::<RpcTypes>();
         self.RelayerCommand_sender.send((req, rx));
         let res = tx.await.unwrap();
@@ -147,23 +158,19 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<UserLogs>, Status> {
         let req = userRequest.into_inner();
         let user = req.address;
-        let time = userRequest.into_inner().start_time.unwrap();
+
         let addr = Address::from_str(&user).unwrap();
-        let usertx = UserTx::new(user, req.signature);
+        let usertx = UserTx::new(user.clone(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx
-                .VerifyUser(n.nonce)
+                .VerifyUser(n.nonce.clone())
                 .await
                 .expect("User verification failed")
             {
                 return Err(Status::permission_denied("Not Authenticated"));
             }
         }
-        let req = RelayerCommand::GetLogs {
-            user,
-            time: time::Instant::checked_add(&self, Duration::from_secs(time.seconds as u64))
-                .unwrap(),
-        };
+        let req = RelayerCommand::GetLogs { user: user.clone() };
 
         let (tx, rx) = oneshot::channel::<RpcTypes>();
         self.RelayerCommand_sender.send((req, tx));
@@ -172,7 +179,7 @@ impl ChainHooks for RelayerService {
             RpcTypes::Logs { logs } => {
                 return Ok(Response::new(UserLogs {
                     address: user,
-                    logs: format!("{:?}", logs),
+                    logs: logs.into_iter().map(|log| format!("{:?}", log)).collect(),
                 }));
             }
             _ => {}
@@ -185,10 +192,10 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<SubscriptionResponse>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
-        let usertx = UserTx::new(user.to_string(), req.signature);
+        let usertx = UserTx::new(user.to_string(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user) {
             if !usertx
-                .VerifyUser(n.nonce)
+                .VerifyUser(n.nonce.clone())
                 .await
                 .expect("User verification failed")
             {
@@ -196,22 +203,25 @@ impl ChainHooks for RelayerService {
             }
         }
         let sub = req.details.unwrap();
+        let cid = sub.chain_id as usize;
         let rpc_command = SubscriptionType::Subscription {
             user,
-            chainid: sub.chain_id as usize,
-            address: sub.target_address,
+            chainid: cid,
+            address: sub.target_address.parse::<Address>().unwrap(),
             event_signature: sub.event_signature,
         };
 
         let (tx, rx) = oneshot::channel::<RpcTypes>();
 
-        let ch = self
+        let mut ch = self
             .RpcHandler
             .lock()
+            .await
             .chain_state
-            .get(sub.chain_id as usize)
+            .get_mut(&cid)
             .unwrap()
             .channel
+            .clone()
             .unwrap();
 
         ch.send((rpc_command, tx)).await;
@@ -222,6 +232,12 @@ impl ChainHooks for RelayerService {
             RpcTypes::Response { success, message } => {
                 if success {
                     let action = req.action.unwrap();
+                    let params = action
+                        .params
+                        .into_iter()
+                        .map(|p| (p.pos as usize, p.params))
+                        .collect::<Vec<_>>();
+
                     let relayer_command = RelayerCommand::DefineRelayerAction {
                         user: user.to_string(),
                         sub_id: message,
@@ -229,7 +245,7 @@ impl ChainHooks for RelayerService {
                         target_address: action.target_address,
                         ABI: action.abi,
                         function_name: action.function_name,
-                        Params: action.params,
+                        Params: params,
                     };
                     let (tx, rx) = oneshot::channel::<RpcTypes>();
                     self.RelayerCommand_sender.send((relayer_command, tx)).await;
@@ -242,7 +258,6 @@ impl ChainHooks for RelayerService {
                                     subscription_id: message,
                                     success: true,
                                     message: String::from("Subscription Created"),
-                                    created_at: time::Instant::now(),
                                 }));
                             }
                         }
@@ -260,10 +275,10 @@ impl ChainHooks for RelayerService {
     ) -> Result<Response<()>, Status> {
         let req = userRequest.into_inner();
         let user = Address::from_str(&req.address).unwrap();
-        let usertx = UserTx::new(user.to_string(), req.signature);
+        let usertx = UserTx::new(user.to_string(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user) {
             if !usertx
-                .VerifyUser(n.nonce)
+                .VerifyUser(n.nonce.clone())
                 .await
                 .expect("User verification failed")
             {
@@ -296,13 +311,14 @@ pub struct UserTx {
 }
 
 impl UserTx {
-    fn new(user: String, signature: String) -> Self {
+    fn new(user: String, signature: String) -> Option<Self> {
         if let Ok(addr) = Address::from_str(&user) {
-            UserTx {
+            return Some(UserTx {
                 user: addr,
                 Signature: signature,
-            }
+            });
         }
+        None
     }
 
     async fn VerifyUser(&self, nonce: String) -> Result<bool, Box<dyn Error>> {

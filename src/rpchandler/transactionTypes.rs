@@ -44,8 +44,6 @@ pub enum RelayerError {
     AlreadyRegistered,
 }
 
-pub enum UserUpdates {}
-
 #[derive(Clone, Default)]
 pub struct RawTransaction {
     pub chain_id: usize,
@@ -74,7 +72,7 @@ impl RawTransaction {
     pub fn build_transaction(
         self,
         log: Log,
-    ) -> Result<TransactionRequest, Box<dyn std::error::Error>> {
+    ) -> Result<TransactionRequest, Box<dyn std::error::Error + Send + Sync>> {
         let contract_addr = Address::from_slice(self.contract_address.as_bytes());
         let ABI: JsonAbi;
 

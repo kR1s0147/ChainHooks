@@ -13,10 +13,7 @@ use std::ops::Add;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::{collections::BTreeMap, default, error::Error};
-use tokio::{
-    sync::{Mutex, mpsc, oneshot},
-    time,
-};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
 pub struct UserInfo {
     pub signer: LocalSigner<SigningKey>,
@@ -35,7 +32,7 @@ pub struct RelayerHandler {
     // command_receiver: Arc<Mutex<mpsc::Receiver<(RelayerCommand, oneshot::Sender<RpcTypes>)>>>,
     relayers: DashMap<Address, UserInfo>,
     actions: DashMap<String, RawTransaction>,
-    user_logs: Arc<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>,
+    user_logs: Arc<DashMap<Address, Vec<UserUpdates>>>,
 }
 
 impl RelayerHandler {
@@ -62,8 +59,12 @@ impl RelayerHandler {
             None => {}
         };
         let signer = LocalSigner::random();
+        let userinfo = UserInfo {
+            signer: signer.clone(),
+            subs: Vec::new(),
+        };
 
-        self.relayers.insert(addr, signer);
+        self.relayers.insert(addr, userinfo);
 
         Ok(signer.address())
     }
@@ -89,8 +90,6 @@ impl RelayerHandler {
                                 eprintln!("Error handling log: {}", e);
                             }
                         }
-
-
                     }
                 }
             }
@@ -121,14 +120,12 @@ impl RelayerHandler {
                 });
             }
 
-            RelayerCommand::GetLogs { user, time } => {
+            RelayerCommand::GetLogs { user } => {
                 if let Ok(addr) = Address::from_str(user.as_str()) {
                     let logs = self.user_logs.clone();
-                    if let Some(map) = logs.get(&addr) {
-                        let mut res_logs = Vec::new();
-                        for (i, logs) in map.range(time..) {
-                            res_logs.push(logs.clone());
-                        }
+                    if let Some(mut map) = logs.get_mut(&addr) {
+                        let mut res_logs = map.clone();
+                        map.clear();
                         res_receiver.send(RpcTypes::Logs { logs: res_logs });
                     }
                 }
@@ -231,7 +228,12 @@ impl RelayerHandler {
 
                 if let Some(ch) = self.RpcCommand_sender.get_mut(&transaction.chain_id) {
                     let (sender, _rec) = oneshot::channel::<RpcTypes>();
-                    ch.send((res, sender)).await;
+                    match ch.send((res, sender)).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            eprintln!("Error sending transaction: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -245,7 +247,6 @@ pub enum RelayerCommand {
     },
     GetLogs {
         user: String,
-        time: time::Instant,
     },
     DefineRelayerAction {
         user: String,

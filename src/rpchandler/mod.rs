@@ -15,13 +15,10 @@ use alloy::{
 use futures::StreamExt;
 use std::{cell::RefCell, default, error::Error, sync::Arc};
 
-use tokio::{
-    sync::{
-        Mutex,
-        mpsc::{self, Receiver},
-        oneshot,
-    },
-    time,
+use tokio::sync::{
+    Mutex,
+    mpsc::{self, Receiver},
+    oneshot,
 };
 
 use tokio_stream::StreamMap;
@@ -146,7 +143,7 @@ impl chainRpc {
             } => {
                 let filter = Filter::new()
                     .address(address.clone())
-                    .events(event_signature);
+                    .event(event_signature);
                 Some((user.clone(), filter))
             }
             _ => None,
@@ -233,7 +230,7 @@ impl chainRpc {
                                     Message: str,
                                     tx: tx_hash.to_string(),
                                 };
-                                t.insert(time::Instant::now(), update);
+                                t.push(update);
                             }
                         }
                     }

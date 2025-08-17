@@ -11,21 +11,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use thiserror::Error;
 use tokio::sync::{Mutex, mpsc, oneshot};
-use tokio::time;
 
 #[derive(Debug, Clone)]
 pub enum SubscriptionType {
     Subscription {
         user: Address,
         chainid: usize,
-        address: Vec<Address>,
-        event_signature: Vec<String>,
+        address: Address,
+        event_signature: String,
     },
     Transaction {
         user: Address,
         signer: LocalSigner<SigningKey>,
         tx: TransactionRequest,
-        db: Arc<DashMap<Address, BTreeMap<time::Instant, UserUpdates>>>,
+        db: Arc<DashMap<Address, Vec<UserUpdates>>>,
     },
     Revoke_Sub {
         user: Address,

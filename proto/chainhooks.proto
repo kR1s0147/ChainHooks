@@ -4,7 +4,7 @@ package chainhooks;
 
 
 import "google/protobuf/empty.proto";
-import "google/protobuf/timestamp.proto"; 
+ 
 service ChainHooks {
 
     
@@ -60,7 +60,6 @@ message RelayerInfo {
 message GetUserLogsRequest {
     string address = 1;
     string signature = 2;
-    google.protobuf.Timestamp start_time = 3;
 }
 
 
@@ -84,20 +83,22 @@ message RelayerAction{
     string target_address = 2; // contract address
     string ABI = 3; // ABI
     string function_name = 4; // Function name
-    repeated string params = 5; // params for the transaction
+    repeated PosParam params= 5; // params for the transaction
 }
 
-
+message PosParam {
+  uint64 pos = 1;
+  string params = 2;
+}
 message SubscriptionResponse {
     string subscription_id = 1; 
     bool success = 2;
     string message = 3; 
-    google.protobuf.Timestamp created_at = 4;
 }
 
 
 message SubscriptionDetails {
-    int32 chain_id = 1; 
+    uint64 chain_id = 1; 
     string target_address = 2; 
     string event_signature = 5;    
 }
