@@ -4,7 +4,6 @@ use crate::rpchandler::rpc_types::{RpcTypes, SubscriptionType};
 use std::collections::HashMap;
 use std::env;
 use std::error::Error;
-use std::fmt::format;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -30,14 +29,9 @@ use chainhooks::*;
 use dotenv::dotenv;
 
 pub struct RelayerService {
-    user_nonce: DashMap<Address, UserNonce>,
+    user_nonce: DashMap<Address, usize>,
     RelayerCommand_sender: mpsc::Sender<(RelayerCommand, oneshot::Sender<RpcTypes>)>,
     RpcHandler: Mutex<RPChandler>,
-}
-
-struct UserNonce {
-    nonce: String,
-    time: Instant,
 }
 
 //     rpc GetNonce(GetNonceRequest) returns (GetNonceResponse);
@@ -58,19 +52,19 @@ impl ChainHooks for RelayerService {
         let req = userRequest.into_inner();
         let user = req.address;
         let user_addr = Address::from_str(&user).unwrap();
-        let mut random_bytes = [0u8; 16];
-        rand::rngs::OsRng.try_fill_bytes(&mut random_bytes);
-        let n = hex::encode(random_bytes);
-        let nonce = UserNonce {
-            nonce: n.clone(),
-            time: Instant::now(),
-        };
 
-        let users_nonce = &self.user_nonce;
-        users_nonce.insert(user_addr, nonce);
+        let mut n: usize = 1;
 
-        Ok(Response::new(GetNonceResponse { nonce: n }))
+        if let Some(mut nonce) = self.user_nonce.get_mut(&user_addr) {
+            *nonce += 1;
+            n = nonce.clone();
+        } else {
+            self.user_nonce.insert(user_addr, n);
+        }
+
+        Ok(Response::new(GetNonceResponse { nonce: n as u64 }))
     }
+
     async fn register(
         &self,
         userRequest: Request<UserAuthRequest>,
@@ -91,7 +85,7 @@ impl ChainHooks for RelayerService {
         let usertx = UserTx::new(req.address, req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user_addr) {
             if !usertx
-                .VerifyUser(n.nonce.clone())
+                .VerifyUser(*n)
                 .await
                 .expect("User verification failed")
             {
@@ -127,7 +121,7 @@ impl ChainHooks for RelayerService {
         let usertx = UserTx::new(user.clone(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx
-                .VerifyUser(n.nonce.clone())
+                .VerifyUser(*n)
                 .await
                 .expect("User verification failed")
             {
@@ -163,7 +157,7 @@ impl ChainHooks for RelayerService {
         let usertx = UserTx::new(user.clone(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&addr) {
             if !usertx
-                .VerifyUser(n.nonce.clone())
+                .VerifyUser(*n)
                 .await
                 .expect("User verification failed")
             {
@@ -195,7 +189,7 @@ impl ChainHooks for RelayerService {
         let usertx = UserTx::new(user.to_string(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user) {
             if !usertx
-                .VerifyUser(n.nonce.clone())
+                .VerifyUser(*n)
                 .await
                 .expect("User verification failed")
             {
@@ -278,7 +272,7 @@ impl ChainHooks for RelayerService {
         let usertx = UserTx::new(user.to_string(), req.signature).unwrap();
         if let Some(n) = self.user_nonce.get(&user) {
             if !usertx
-                .VerifyUser(n.nonce.clone())
+                .VerifyUser(*n)
                 .await
                 .expect("User verification failed")
             {
@@ -321,9 +315,9 @@ impl UserTx {
         None
     }
 
-    async fn VerifyUser(&self, nonce: String) -> Result<bool, Box<dyn Error>> {
+    async fn VerifyUser(&self, nonce: usize) -> Result<bool, Box<dyn Error>> {
         if let Ok(sign) = Signature::from_str(&self.Signature) {
-            if let Ok(addr) = sign.recover_address_from_msg(nonce) {
+            if let Ok(addr) = sign.recover_address_from_msg(nonce.to_string()) {
                 if addr == self.user {
                     return Ok(true);
                 }

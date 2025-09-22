@@ -34,7 +34,7 @@ message GetNonceRequest {
 
 
 message GetNonceResponse {
-    string nonce = 1; 
+    uint64 nonce = 1; 
 }
 
 message UserAuthRequest {

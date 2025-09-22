@@ -55,7 +55,6 @@ pub struct chainRpc {
     active_subscriptions: DashMap<String, SubscriptionType>,
     event_sender: mpsc::Sender<RpcTypes>,
     provider: Arc<Mutex<providerType>>,
-    number_of_subsciptions: Arc<Mutex<usize>>,
 }
 
 impl chainRpc {
@@ -91,7 +90,6 @@ impl chainRpc {
             active_subscriptions: Default::default(),
             event_sender: log_sender,
             provider: Arc::new(Mutex::new(provider)),
-            number_of_subsciptions: Arc::new(Mutex::new(1)),
         };
 
         chainrpc
@@ -177,8 +175,6 @@ impl chainRpc {
                     }
                 };
 
-                *self.number_of_subsciptions.lock().await += 1;
-
                 let subid = sub.local_id().to_string();
 
                 self.active_subscriptions.insert(subid.clone(), cmd.clone());
@@ -240,7 +236,6 @@ impl chainRpc {
 
             SubscriptionType::Revoke_Sub { user, subs } => {
                 self.active_subscriptions.remove(&subs);
-                *self.number_of_subsciptions.lock().await -= 1;
                 if let Some(mut user_subs) = self.subscriptions.get_mut(&user) {
                     user_subs.retain(|(s, _)| *s != subs);
                 }
